@@ -10,7 +10,7 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       VitePWA({
-        registerType: 'prompt',
+        registerType: 'autoUpdate',
         includeAssets: ['favicon.svg', 'icons/icon-192.svg', 'icons/icon-512.svg'],
         manifest: {
           name: env.VITE_APP_NAME || 'TaskStride',
