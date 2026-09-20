@@ -1,10 +1,18 @@
-import type { GoogleTask, TaskWithList } from '../types/googleTasks'
+import type { GoogleTask, GoogleTaskList, TaskWithList } from '../types/googleTasks'
 import { isDueToday, isOverdue, isWithinHorizon } from './dates'
 
 export type SmartView = 'today' | 'upcoming' | 'all' | 'no-date' | 'completed' | 'assigned'
 
 export function sortByPosition<T extends Pick<GoogleTask, 'position'>>(tasks: T[]): T[] {
   return [...tasks].sort((a, b) => a.position.localeCompare(b.position))
+}
+
+export function sortByGoogleOrder(tasks: TaskWithList[], lists: GoogleTaskList[]): TaskWithList[] {
+  const listOrder = new Map(lists.map((list, index) => [list.id, index]))
+  return [...tasks].sort((a, b) => {
+    const byList = (listOrder.get(a.taskListId) ?? Number.MAX_SAFE_INTEGER) - (listOrder.get(b.taskListId) ?? Number.MAX_SAFE_INTEGER)
+    return byList || a.position.localeCompare(b.position)
+  })
 }
 
 export function buildTaskTree(tasks: GoogleTask[]): Array<GoogleTask & { children: GoogleTask[] }> {

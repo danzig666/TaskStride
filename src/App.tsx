@@ -15,7 +15,7 @@ import { googleAuth } from './auth/googleAuth'
 import { cacheSnapshot, clearCache, readSnapshot } from './db/cache'
 import { dateKeyToGoogleDue, dueToDateKey, formatDue, isOverdue } from './lib/dates'
 import { messages, type AppLocale } from './i18n'
-import { buildTaskTree, canMoveAcrossLists, inSmartView, searchTasks, type SmartView } from './lib/tasks'
+import { buildTaskTree, canMoveAcrossLists, inSmartView, reconcileTasks, searchTasks, sortByGoogleOrder, sortByPosition, type SmartView } from './lib/tasks'
 import { useUiStore } from './store/uiStore'
 import type { GoogleTask, GoogleTaskList, TaskPatch, TaskWithList } from './types/googleTasks'
 
@@ -27,13 +27,19 @@ const viewInfo: Record<SmartView, { labelKey: 'all' | 'today' | 'upcoming' | 'no
 const accents = ['indigo', 'coral', 'teal', 'amber']
 
 async function fetchWorkspace(): Promise<WorkspaceData> {
+  const syncStartedAt = new Date().toISOString()
+  const snapshot = await readSnapshot().catch(() => ({ lists: [], tasks: [], lastSync: undefined }))
   const lists = await repository.listTaskLists()
+  const cachedListIds = new Set(snapshot.lists.map((list) => list.id))
   const tasks = (await Promise.all(lists.map(async (list) => {
-    const all: GoogleTask[] = []; let pageToken: string | undefined
-    do { const page = await repository.listTasks(list.id, { pageToken, showCompleted: true, showHidden: true, maxResults: 100 }); all.push(...(page.items ?? [])); pageToken = page.nextPageToken } while (pageToken)
-    return all.filter((task) => !task.deleted).map((task) => ({ ...task, taskListId: list.id, taskListTitle: list.title }))
+    const incremental = Boolean(snapshot.lastSync && cachedListIds.has(list.id))
+    const incoming: GoogleTask[] = []; let pageToken: string | undefined
+    do { const page = await repository.listTasks(list.id, { pageToken, updatedMin: incremental ? snapshot.lastSync : undefined, showCompleted: true, showDeleted: incremental, showHidden: true, maxResults: 100 }); incoming.push(...(page.items ?? [])); pageToken = page.nextPageToken } while (pageToken)
+    const cached = snapshot.tasks.filter((task) => task.taskListId === list.id)
+    const ordered = incremental ? reconcileTasks(cached, incoming) : sortByPosition(incoming.filter((task) => !task.deleted))
+    return ordered.map((task) => ({ ...task, taskListId: list.id, taskListTitle: list.title }))
   }))).flat()
-  await cacheSnapshot(lists, tasks)
+  await cacheSnapshot(lists, tasks, syncStartedAt)
   return { lists, tasks }
 }
 
@@ -69,7 +75,7 @@ export default function App() {
   const smart = activeView in viewInfo ? activeView as SmartView : null
   const viewLabel = smart ? m[viewInfo[smart].labelKey] : activeList?.title ?? m.tasksTab
   const baseTasks = smart ? data.tasks.filter((task) => inSmartView(task, smart, horizon)) : data.tasks.filter((task) => task.taskListId === activeView && !task.hidden)
-  const visibleTasks = searchTasks(baseTasks, query)
+  const visibleTasks = searchTasks(sortByGoogleOrder(baseTasks, data.lists), query)
   const rootTasks = visibleTasks.filter((task) => !task.parent)
   const incomplete = rootTasks.filter((task) => task.status !== 'completed')
   const completed = rootTasks.filter((task) => task.status === 'completed')
@@ -172,7 +178,7 @@ export default function App() {
       {syncState === 'error' && <div className="reconnect-bar"><CloudOff /> {m.syncErrorDetail} <button onClick={() => workspace.refetch()}>{m.retry}</button></div>}
       <header className="view-header"><div><p className="eyebrow">{new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</p><h1>{viewLabel}</h1><p>{incomplete.length ? (incomplete.length === 1 ? m.focusOne : m.focusMany.replace('{count}', String(incomplete.length))) : smart === 'today' ? m.nothingToday : m.noTasksHere}</p></div><div className="header-actions"><button className="icon-button" onClick={refresh} aria-label={m.refreshTasks}><RefreshCw className={workspace.isFetching ? 'spinning' : ''} /></button><button className="icon-button" onClick={() => setCommandOpen(true)} aria-label={m.commandMenu}><MoreHorizontal /></button></div></header>
       <section className="quick-add"><span className="quick-plus"><Plus /></span><input ref={quickInput} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createTask() }} aria-label={m.addATask} placeholder={defaultListId ? m.addTask : m.createListFirst} disabled={!defaultListId || !online || !connected} /><div className="quick-actions"><label className="date-control"><CalendarDays /><span>{m.date}</span><input type="date" value={quickDate} onChange={(event) => setQuickDate(event.target.value)} aria-label={m.dueDate} /></label><kbd>N</kbd></div></section>
-      <div className="filter-bar"><span>{visibleTasks.length} {m.tasks}</span><button className="search-trigger" onClick={() => setSearchOpen(true)}><Search />{m.search} <kbd>/</kbd></button></div>
+      <div className="filter-bar"><span>{visibleTasks.length} {m.tasks}</span><label className="task-filter"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.filterTasks} aria-label={m.filterTasks} />{query && <button type="button" onClick={() => setQuery('')} aria-label={m.clearFilter}><X /></button>}</label></div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={incomplete.map((task) => task.id)} strategy={verticalListSortingStrategy}><section className="task-list" aria-label="Tasks">
         {!incomplete.length && !completed.length && <EmptyState view={smart} query={query} onAdd={() => quickInput.current?.focus()} />}
         {incomplete.map((task) => activeList || smart === 'all' ? <SortableTaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={data.tasks.filter((item) => item.parent === task.id)} onSelect={() => selectTask(task.id)} onToggle={() => toggleTask(task)} /> : <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={data.tasks.filter((item) => item.parent === task.id)} onSelect={() => selectTask(task.id)} onToggle={() => toggleTask(task)} />)}
