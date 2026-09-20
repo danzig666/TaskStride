@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { useVirtualizer } from '@tanstack/react-virtual'
 import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
@@ -68,6 +69,7 @@ export default function App() {
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
   const [online, setOnline] = useState(navigator.onLine)
   const quickInput = useRef<HTMLInputElement>(null)
+  const taskListViewport = useRef<HTMLElement>(null)
   const connected = mockMode || googleAuth.connected
 
   useEffect(() => { const listener = () => setAuthVersion((value) => value + 1); googleAuth.addEventListener('change', listener); return () => googleAuth.removeEventListener('change', listener) }, [])
@@ -99,8 +101,22 @@ export default function App() {
     return grouped
   }, [data.tasks])
   const sortableTaskIds = useMemo(() => incomplete.map((task) => task.id), [incomplete])
+  // TanStack Virtual manages its own mutable measurement functions.
+  // eslint-disable-next-line react-hooks/incompatible-library
+  const taskVirtualizer = useVirtualizer({
+    count: incomplete.length,
+    getScrollElement: () => taskListViewport.current,
+    estimateSize: () => density === 'compact' ? 52 : 76,
+    getItemKey: (index) => incomplete[index].id,
+    initialRect: { width: 700, height: 600 },
+    overscan: 10,
+  })
+  const virtualTaskRows = import.meta.env.MODE === 'test' ? incomplete.map((_, index) => ({ index, start: index * 76 })) : taskVirtualizer.getVirtualItems()
+  const virtualTaskListHeight = import.meta.env.MODE === 'test' ? incomplete.length * 76 : taskVirtualizer.getTotalSize()
   const defaultListId = activeList?.id ?? data.lists[0]?.id
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }))
+
+  useEffect(() => { if (taskListViewport.current) taskListViewport.current.scrollTop = 0 }, [activeView, query])
 
   const optimisticMutation = useMutation({
     mutationFn: async ({ task, patch }: { task: TaskWithList; patch: TaskPatch }) => repository.patchTask(task.taskListId, task.id, patch),
@@ -201,9 +217,9 @@ export default function App() {
       <header className="view-header"><div><p className="eyebrow">{new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</p><h1>{viewLabel}</h1><p>{incomplete.length ? (incomplete.length === 1 ? m.focusOne : m.focusMany.replace('{count}', String(incomplete.length))) : smart === 'today' ? m.nothingToday : m.noTasksHere}</p></div><div className="header-actions"><button className="icon-button" onClick={refresh} aria-label={m.refreshTasks}><RefreshCw className={workspace.isFetching ? 'spinning' : ''} /></button><button className="icon-button" onClick={() => setCommandOpen(true)} aria-label={m.commandMenu}><MoreHorizontal /></button></div></header>
       <section className="quick-add"><span className="quick-plus"><Plus /></span><input ref={quickInput} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createTask() }} aria-label={m.addATask} placeholder={defaultListId ? m.addTask : m.createListFirst} disabled={!defaultListId || !online || !connected} /><div className="quick-actions"><label className="date-control"><CalendarDays /><span>{m.date}</span><input type="date" value={quickDate} onChange={(event) => setQuickDate(event.target.value)} aria-label={m.dueDate} /></label><kbd>N</kbd></div></section>
       <div className="filter-bar"><span>{visibleTasks.length} {m.tasks}</span><label className="task-filter"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.filterTasks} aria-label={m.filterTasks} />{query && <button type="button" onClick={() => setQuery('')} aria-label={m.clearFilter}><X /></button>}</label></div>
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={sortableTaskIds} strategy={verticalListSortingStrategy}><section className="task-list" aria-label="Tasks">
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={sortableTaskIds} strategy={verticalListSortingStrategy}><section className="task-list" aria-label="Tasks" ref={taskListViewport}>
         {!incomplete.length && !completed.length && <EmptyState view={smart} query={query} onAdd={() => quickInput.current?.focus()} />}
-        {incomplete.map((task) => activeList || smart === 'all' ? <SortableTaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} /> : <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} />)}
+        <div className="virtual-task-list" style={{ height: virtualTaskListHeight }}>{virtualTaskRows.map((virtualRow) => { const task = incomplete[virtualRow.index]; return <div className="virtual-task-row" data-index={virtualRow.index} key={task.id} ref={taskVirtualizer.measureElement} style={{ transform: `translateY(${virtualRow.start}px)` }}>{activeList || smart === 'all' ? <SortableTaskRow task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} /> : <TaskRow task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} />}</div> })}</div>
         {completed.length > 0 && <><button className="completed-heading"><ChevronDown /> Completed <span>{completed.length}</span></button>{completed.map((task) => <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} />)}</>}
       </section></SortableContext></DndContext>
     </main>

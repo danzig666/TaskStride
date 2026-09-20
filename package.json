@@ -22,6 +22,7 @@
     "@dnd-kit/core": "latest",
     "@dnd-kit/sortable": "latest",
     "@tanstack/react-query": "latest",
+    "@tanstack/react-virtual": "^3.14.13",
     "date-fns": "latest",
     "dexie": "latest",
     "lucide-react": "latest",
