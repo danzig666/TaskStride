@@ -61,7 +61,7 @@ export default function App() {
   useEffect(() => { document.documentElement.lang = locale }, [locale])
 
   const workspace = useQuery({ queryKey: ['workspace', authVersion], queryFn: fetchWorkspace, enabled: connected && online, refetchOnWindowFocus: true, retry: 1 })
-  const syncState: 'synced' | 'syncing' | 'offline' | 'reconnect' | 'error' = !online ? 'offline' : !connected ? 'reconnect' : workspace.isFetching ? 'syncing' : workspace.isError ? 'error' : workspace.data ? 'synced' : 'syncing'
+  const syncState: 'synced' | 'syncing' | 'offline' | 'reconnect' | 'error' = !online ? 'offline' : !connected ? 'reconnect' : workspace.isError ? 'error' : workspace.isFetching ? 'syncing' : workspace.data ? 'synced' : 'syncing'
 
   const data = workspace.data ?? queryClient.getQueryData<WorkspaceData>(['workspace', authVersion]) ?? { lists: [], tasks: [] }
   const selectedTask = data.tasks.find((task) => task.id === selectedTaskId)
@@ -169,6 +169,7 @@ export default function App() {
       <header className="mobile-topbar"><button onClick={() => setMobileMenu(true)} aria-label="Open navigation"><Menu /></button><strong>{viewLabel}</strong><button onClick={() => setSearchOpen(true)} aria-label="Search"><Search /></button></header>
       {syncState === 'reconnect' && <div className="reconnect-bar"><CloudOff /> {m.cachedReadonly} <button onClick={connect}>{m.reconnect}</button></div>}
       {syncState === 'offline' && <div className="reconnect-bar"><WifiOff /> {m.offlineCached}</div>}
+      {syncState === 'error' && <div className="reconnect-bar"><CloudOff /> {m.syncErrorDetail} <button onClick={() => workspace.refetch()}>{m.retry}</button></div>}
       <header className="view-header"><div><p className="eyebrow">{new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</p><h1>{viewLabel}</h1><p>{incomplete.length ? (incomplete.length === 1 ? m.focusOne : m.focusMany.replace('{count}', String(incomplete.length))) : smart === 'today' ? m.nothingToday : m.noTasksHere}</p></div><div className="header-actions"><button className="icon-button" onClick={refresh} aria-label={m.refreshTasks}><RefreshCw className={workspace.isFetching ? 'spinning' : ''} /></button><button className="icon-button" onClick={() => setCommandOpen(true)} aria-label={m.commandMenu}><MoreHorizontal /></button></div></header>
       <section className="quick-add"><span className="quick-plus"><Plus /></span><input ref={quickInput} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createTask() }} aria-label={m.addATask} placeholder={defaultListId ? m.addTask : m.createListFirst} disabled={!defaultListId || !online || !connected} /><div className="quick-actions"><label className="date-control"><CalendarDays /><span>{m.date}</span><input type="date" value={quickDate} onChange={(event) => setQuickDate(event.target.value)} aria-label={m.dueDate} /></label><kbd>N</kbd></div></section>
       <div className="filter-bar"><span>{visibleTasks.length} {m.tasks}</span><button className="search-trigger" onClick={() => setSearchOpen(true)}><Search />{m.search} <kbd>/</kbd></button></div>

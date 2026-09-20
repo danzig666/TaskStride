@@ -21,7 +21,7 @@ Live app: [tasks.koszeghy.art](https://tasks.koszeghy.art) (private, protected b
 - All tasks is the default, top navigation view, with Today, Upcoming, No date, Completed, and Assigned views available below it.
 - Fast task creation, completion, editing, deletion with Undo, date-only due dates, notes, subtasks, manual ordering, and cross-list movement.
 - Typed Google Tasks adapter with pagination, PATCH updates, task/list CRUD, move semantics, clear-completed support, and friendly API errors.
-- Google Identity Services token flow. Access tokens stay in memory and are never persisted.
+- Google Identity Services token flow. Access tokens are kept in session storage until expiry so page reloads stay connected; disconnecting clears them.
 - Responsive three-pane desktop, tablet sheet, and dedicated mobile navigation.
 - Instant local search, command menu, keyboard shortcuts, dark mode, comfortable/compact density, JSON export, and list-specific task counts.
 - Complete English and Hungarian interface selectable in Settings; the preference is stored locally.

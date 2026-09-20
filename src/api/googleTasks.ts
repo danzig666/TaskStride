@@ -14,10 +14,19 @@ export class GoogleTasksRepository implements TaskRepository {
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const token = this.getToken()
     if (!token) throw new GoogleApiError(401, 'Reconnect Google to continue.')
-    const response = await fetch(`${API_ROOT}${path}`, {
-      ...init,
-      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init?.headers },
-    })
+    let response: Response
+    try {
+      response = await fetch(`${API_ROOT}${path}`, {
+        ...init,
+        signal: init?.signal ?? AbortSignal.timeout(30_000),
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json', ...init?.headers },
+      })
+    } catch (error) {
+      if (error instanceof DOMException && (error.name === 'TimeoutError' || error.name === 'AbortError')) {
+        throw new GoogleApiError(0, 'Google Tasks did not respond. Try refreshing again.')
+      }
+      throw error
+    }
     if (response.status === 401) this.onExpired?.()
     if (!response.ok) {
       let details: unknown
