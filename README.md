@@ -2,7 +2,17 @@
 
 TaskStride is a responsive, installable frontend for Google Tasks. It talks directly from the browser to Google Identity Services and the official Google Tasks REST API. There is no application backend, proprietary task database, or second account system.
 
-> Screenshot placeholders: `docs/screenshots/desktop-light.png`, `desktop-dark.png`, and `mobile.png` can be added when publishing a branded release.
+## Screenshots
+
+### Desktop
+
+![TaskStride desktop interface in light mode](docs/screenshots/desktop-light.png)
+
+![TaskStride desktop interface in dark mode](docs/screenshots/desktop-dark.png)
+
+### Mobile (Hungarian)
+
+<img src="docs/screenshots/mobile-hu.png" alt="TaskStride mobile interface in Hungarian" width="390">
 
 ## Features
 
