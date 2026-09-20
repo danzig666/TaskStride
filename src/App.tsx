@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
@@ -20,25 +20,34 @@ import { useUiStore } from './store/uiStore'
 import type { GoogleTask, GoogleTaskList, TaskPatch, TaskWithList } from './types/googleTasks'
 
 type WorkspaceData = { lists: GoogleTaskList[]; tasks: TaskWithList[] }
+type SyncProgress = { phase: 'lists' | 'tasks' | 'saving'; downloaded: number; completedLists: number; totalLists: number }
 const viewInfo: Record<SmartView, { labelKey: 'all' | 'today' | 'upcoming' | 'noDate' | 'completed' | 'assigned'; icon: typeof Sparkles }> = {
   all: { labelKey: 'all', icon: ListTodo }, today: { labelKey: 'today', icon: Sparkles }, upcoming: { labelKey: 'upcoming', icon: CalendarDays },
   'no-date': { labelKey: 'noDate', icon: Circle }, completed: { labelKey: 'completed', icon: Check }, assigned: { labelKey: 'assigned', icon: Inbox },
 }
 const accents = ['indigo', 'coral', 'teal', 'amber']
+const noSubtasks: GoogleTask[] = []
 
-async function fetchWorkspace(): Promise<WorkspaceData> {
+async function fetchWorkspace(onProgress: (progress: SyncProgress) => void): Promise<WorkspaceData> {
   const syncStartedAt = new Date().toISOString()
+  onProgress({ phase: 'lists', downloaded: 0, completedLists: 0, totalLists: 0 })
   const snapshot = await readSnapshot().catch(() => ({ lists: [], tasks: [], lastSync: undefined, syncVersion: undefined }))
   const lists = await repository.listTaskLists()
   const cachedListIds = new Set(snapshot.lists.map((list) => list.id))
+  let downloaded = 0
+  let completedLists = 0
+  onProgress({ phase: 'tasks', downloaded, completedLists, totalLists: lists.length })
   const tasks = (await Promise.all(lists.map(async (list) => {
     const incremental = Boolean(snapshot.lastSync && snapshot.syncVersion === syncCacheVersion && cachedListIds.has(list.id))
     const incoming: GoogleTask[] = []; let pageToken: string | undefined
-    do { const page = await repository.listTasks(list.id, { pageToken, updatedMin: incremental ? snapshot.lastSync : undefined, showCompleted: true, showDeleted: incremental, showHidden: true, showAssigned: true, maxResults: 100 }); incoming.push(...(page.items ?? [])); pageToken = page.nextPageToken } while (pageToken)
+    do { const page = await repository.listTasks(list.id, { pageToken, updatedMin: incremental ? snapshot.lastSync : undefined, showCompleted: true, showDeleted: incremental, showHidden: true, showAssigned: true, maxResults: 100 }); incoming.push(...(page.items ?? [])); downloaded += page.items?.length ?? 0; onProgress({ phase: 'tasks', downloaded, completedLists, totalLists: lists.length }); pageToken = page.nextPageToken } while (pageToken)
     const cached = snapshot.tasks.filter((task) => task.taskListId === list.id)
     const ordered = incremental ? reconcileTasks(cached, incoming) : sortByPosition(incoming.filter((task) => !task.deleted))
+    completedLists += 1
+    onProgress({ phase: 'tasks', downloaded, completedLists, totalLists: lists.length })
     return ordered.map((task) => ({ ...task, taskListId: list.id, taskListTitle: list.title }))
   }))).flat()
+  onProgress({ phase: 'saving', downloaded, completedLists, totalLists: lists.length })
   await cacheSnapshot(lists, tasks, syncStartedAt)
   return { lists, tasks }
 }
@@ -56,6 +65,7 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
   const [online, setOnline] = useState(navigator.onLine)
   const quickInput = useRef<HTMLInputElement>(null)
   const connected = mockMode || googleAuth.connected
@@ -66,19 +76,29 @@ export default function App() {
   useEffect(() => { const resolved = theme === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme; document.documentElement.dataset.theme = resolved }, [theme])
   useEffect(() => { document.documentElement.lang = locale }, [locale])
 
-  const workspace = useQuery({ queryKey: ['workspace', authVersion], queryFn: fetchWorkspace, enabled: connected && online, refetchOnWindowFocus: true, retry: 1 })
+  const workspace = useQuery({ queryKey: ['workspace', authVersion], queryFn: () => fetchWorkspace(setSyncProgress), enabled: connected && online, refetchOnWindowFocus: true, retry: 1 })
   const syncState: 'synced' | 'syncing' | 'offline' | 'reconnect' | 'error' = !online ? 'offline' : !connected ? 'reconnect' : workspace.isError ? 'error' : workspace.isFetching ? 'syncing' : workspace.data ? 'synced' : 'syncing'
 
   const data = workspace.data ?? queryClient.getQueryData<WorkspaceData>(['workspace', authVersion]) ?? { lists: [], tasks: [] }
-  const selectedTask = data.tasks.find((task) => task.id === selectedTaskId)
+  const selectedTask = useMemo(() => data.tasks.find((task) => task.id === selectedTaskId), [data.tasks, selectedTaskId])
   const activeList = data.lists.find((list) => list.id === activeView)
   const smart = activeView in viewInfo ? activeView as SmartView : null
   const viewLabel = smart ? m[viewInfo[smart].labelKey] : activeList?.title ?? m.tasksTab
-  const baseTasks = smart ? data.tasks.filter((task) => inSmartView(task, smart, horizon)) : data.tasks.filter((task) => task.taskListId === activeView && !task.hidden)
-  const visibleTasks = searchTasks(sortByGoogleOrder(baseTasks, data.lists), query)
-  const rootTasks = visibleTasks.filter((task) => !task.parent)
-  const incomplete = rootTasks.filter((task) => task.status !== 'completed')
-  const completed = rootTasks.filter((task) => task.status === 'completed')
+  const baseTasks = useMemo(() => smart ? data.tasks.filter((task) => inSmartView(task, smart, horizon)) : data.tasks.filter((task) => task.taskListId === activeView && !task.hidden), [activeView, data.tasks, horizon, smart])
+  const visibleTasks = useMemo(() => searchTasks(sortByGoogleOrder(baseTasks, data.lists), query), [baseTasks, data.lists, query])
+  const rootTasks = useMemo(() => visibleTasks.filter((task) => !task.parent), [visibleTasks])
+  const incomplete = useMemo(() => rootTasks.filter((task) => task.status !== 'completed'), [rootTasks])
+  const completed = useMemo(() => rootTasks.filter((task) => task.status === 'completed'), [rootTasks])
+  const subtasksByParent = useMemo(() => {
+    const grouped = new Map<string, TaskWithList[]>()
+    for (const task of data.tasks) if (task.parent) {
+      const siblings = grouped.get(task.parent)
+      if (siblings) siblings.push(task)
+      else grouped.set(task.parent, [task])
+    }
+    return grouped
+  }, [data.tasks])
+  const sortableTaskIds = useMemo(() => incomplete.map((task) => task.id), [incomplete])
   const defaultListId = activeList?.id ?? data.lists[0]?.id
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }))
 
@@ -99,11 +119,12 @@ export default function App() {
     catch (error) { queryClient.setQueryData<WorkspaceData>(['workspace', authVersion], (current) => current ? ({ ...current, tasks: current.tasks.filter((task) => task.id !== temporary.id) }) : current); toast.error(error instanceof Error ? error.message : 'Couldn’t create task', { action: { label: 'Retry', onClick: createTask } }) }
   }
 
-  const toggleTask = (task: TaskWithList) => {
+  const mutateTask = optimisticMutation.mutate
+  const toggleTask = useCallback((task: TaskWithList) => {
     const completing = task.status !== 'completed'
-    optimisticMutation.mutate({ task, patch: { status: completing ? 'completed' : 'needsAction', completed: completing ? new Date().toISOString() : null } })
-    toast(completing ? m.taskCompleted : m.taskReopened, { action: { label: m.undo, onClick: () => optimisticMutation.mutate({ task: { ...task, status: completing ? 'completed' : 'needsAction' }, patch: { status: task.status, completed: task.completed ?? null } }) } })
-  }
+    mutateTask({ task, patch: { status: completing ? 'completed' : 'needsAction', completed: completing ? new Date().toISOString() : null } })
+    toast(completing ? m.taskCompleted : m.taskReopened, { action: { label: m.undo, onClick: () => mutateTask({ task: { ...task, status: completing ? 'completed' : 'needsAction' }, patch: { status: task.status, completed: task.completed ?? null } }) } })
+  }, [m.taskCompleted, m.taskReopened, m.undo, mutateTask])
 
   const deleteTask = async (task: TaskWithList) => {
     const snapshot = { ...task }; queryClient.setQueryData<WorkspaceData>(['workspace', authVersion], (current) => current ? ({ ...current, tasks: current.tasks.filter((item) => item.id !== task.id && item.parent !== task.id) }) : current); selectTask(undefined)
@@ -176,13 +197,14 @@ export default function App() {
       {syncState === 'reconnect' && <div className="reconnect-bar"><CloudOff /> {m.cachedReadonly} <button onClick={connect}>{m.reconnect}</button></div>}
       {syncState === 'offline' && <div className="reconnect-bar"><WifiOff /> {m.offlineCached}</div>}
       {syncState === 'error' && <div className="reconnect-bar"><CloudOff /> {m.syncErrorDetail} <button onClick={() => workspace.refetch()}>{m.retry}</button></div>}
+      {syncState === 'syncing' && syncProgress && <div className="sync-progress" role="status" aria-label={m.syncing} aria-live="polite"><div><RefreshCw className="spinning" /><span>{syncProgress.phase === 'lists' ? m.syncLoadingLists : syncProgress.phase === 'saving' ? m.syncSaving : m.syncProgress.replace('{count}', String(syncProgress.downloaded)).replace('{done}', String(syncProgress.completedLists)).replace('{total}', String(syncProgress.totalLists))}</span></div><i aria-hidden="true"><span /></i></div>}
       <header className="view-header"><div><p className="eyebrow">{new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</p><h1>{viewLabel}</h1><p>{incomplete.length ? (incomplete.length === 1 ? m.focusOne : m.focusMany.replace('{count}', String(incomplete.length))) : smart === 'today' ? m.nothingToday : m.noTasksHere}</p></div><div className="header-actions"><button className="icon-button" onClick={refresh} aria-label={m.refreshTasks}><RefreshCw className={workspace.isFetching ? 'spinning' : ''} /></button><button className="icon-button" onClick={() => setCommandOpen(true)} aria-label={m.commandMenu}><MoreHorizontal /></button></div></header>
       <section className="quick-add"><span className="quick-plus"><Plus /></span><input ref={quickInput} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createTask() }} aria-label={m.addATask} placeholder={defaultListId ? m.addTask : m.createListFirst} disabled={!defaultListId || !online || !connected} /><div className="quick-actions"><label className="date-control"><CalendarDays /><span>{m.date}</span><input type="date" value={quickDate} onChange={(event) => setQuickDate(event.target.value)} aria-label={m.dueDate} /></label><kbd>N</kbd></div></section>
       <div className="filter-bar"><span>{visibleTasks.length} {m.tasks}</span><label className="task-filter"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.filterTasks} aria-label={m.filterTasks} />{query && <button type="button" onClick={() => setQuery('')} aria-label={m.clearFilter}><X /></button>}</label></div>
-      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={incomplete.map((task) => task.id)} strategy={verticalListSortingStrategy}><section className="task-list" aria-label="Tasks">
+      <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={sortableTaskIds} strategy={verticalListSortingStrategy}><section className="task-list" aria-label="Tasks">
         {!incomplete.length && !completed.length && <EmptyState view={smart} query={query} onAdd={() => quickInput.current?.focus()} />}
-        {incomplete.map((task) => activeList || smart === 'all' ? <SortableTaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={data.tasks.filter((item) => item.parent === task.id)} onSelect={() => selectTask(task.id)} onToggle={() => toggleTask(task)} /> : <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={data.tasks.filter((item) => item.parent === task.id)} onSelect={() => selectTask(task.id)} onToggle={() => toggleTask(task)} />)}
-        {completed.length > 0 && <><button className="completed-heading"><ChevronDown /> Completed <span>{completed.length}</span></button>{completed.map((task) => <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={[]} onSelect={() => selectTask(task.id)} onToggle={() => toggleTask(task)} />)}</>}
+        {incomplete.map((task) => activeList || smart === 'all' ? <SortableTaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} /> : <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} />)}
+        {completed.length > 0 && <><button className="completed-heading"><ChevronDown /> Completed <span>{completed.length}</span></button>{completed.map((task) => <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} />)}</>}
       </section></SortableContext></DndContext>
     </main>
 
@@ -201,18 +223,20 @@ export default function App() {
 function SyncLabel({ state }: { state: 'synced' | 'syncing' | 'offline' | 'reconnect' | 'error' }) { const m = messages[useUiStore((store) => store.locale)]; return <>{({ synced: m.synced, syncing: m.syncing, offline: m.offline, reconnect: m.reconnectRequired, error: m.syncError })[state]}</> }
 function Welcome({ onConnect }: { onConnect: () => void }) { const m = messages[useUiStore((store) => store.locale)]; return <main className="welcome"><div className="welcome-card"><span className="welcome-logo"><Check /></span><h1>TaskStride</h1><p className="welcome-lead">{m.welcomeLead}</p><p>{m.welcomePrivacy}</p><button className="primary-button" onClick={onConnect}>{m.connectGoogle} <ArrowUpRight /></button><button className="text-button" onClick={() => toast(m.welcomePrivacy)}>{m.howItWorks}</button></div></main> }
 
-function TaskRow({ task, selected, showList, subtasks, onSelect, onToggle, dragHandle }: { task: TaskWithList; selected: boolean; showList: boolean; subtasks: GoogleTask[]; onSelect: () => void; onToggle: () => void; dragHandle?: React.ReactNode }) {
+type TaskRowProps = { task: TaskWithList; selected: boolean; showList: boolean; subtasks: GoogleTask[]; onSelectTask: (taskId: string) => void; onToggleTask: (task: TaskWithList) => void; dragHandle?: React.ReactNode }
+
+const TaskRow = memo(function TaskRow({ task, selected, showList, subtasks, onSelectTask, onToggleTask, dragHandle }: TaskRowProps) {
   const locale = useUiStore((store) => store.locale); const m = messages[locale]
   const completedChildren = subtasks.filter((item) => item.status === 'completed').length
   const dueLabel = formatDue(task.due, new Date(), locale === 'hu' ? huLocale : enUS); const localizedDue = dueLabel === 'Today' ? m.today : dueLabel === 'Tomorrow' ? (locale === 'hu' ? 'Holnap' : 'Tomorrow') : dueLabel === 'Yesterday' ? (locale === 'hu' ? 'Tegnap' : 'Yesterday') : dueLabel
-  return <article className={`task-row ${selected ? 'selected' : ''} ${task.status === 'completed' ? 'is-complete' : ''}`} onClick={onSelect} tabIndex={0} onKeyDown={(event) => event.key === 'Enter' && onSelect()}>
-    {dragHandle}<button className="check" onClick={(event) => { event.stopPropagation(); onToggle() }} aria-label={`${task.status === 'completed' ? m.markIncomplete : m.complete} ${task.title}`}>{task.status === 'completed' && <Check />}</button>
+  return <article className={`task-row ${selected ? 'selected' : ''} ${task.status === 'completed' ? 'is-complete' : ''}`} onClick={() => onSelectTask(task.id)} tabIndex={0} onKeyDown={(event) => event.key === 'Enter' && onSelectTask(task.id)}>
+    {dragHandle}<button className="check" onClick={(event) => { event.stopPropagation(); onToggleTask(task) }} aria-label={`${task.status === 'completed' ? m.markIncomplete : m.complete} ${task.title}`}>{task.status === 'completed' && <Check />}</button>
     <div className="task-copy"><strong>{task.title}</strong>{task.notes && <p>{task.notes}</p>}<div className="meta">{task.due && <span className={`due ${isOverdue(task.due) ? 'overdue' : dueLabel === 'Today' ? 'today' : ''}`}><CalendarDays />{localizedDue}</span>}{showList && <span>{task.taskListTitle}</span>}{subtasks.length > 0 && <span>{completedChildren}/{subtasks.length} {m.subtasks.toLocaleLowerCase(locale)}</span>}{task.assignmentInfo && <span className="source-badge">{task.assignmentInfo.surfaceType === 'DOCUMENT' ? 'Docs' : m.assigned}</span>}</div></div>
     <button className="row-menu" aria-label={m.taskActions}><MoreHorizontal /></button>
   </article>
-}
+})
 
-function SortableTaskRow(props: Omit<Parameters<typeof TaskRow>[0], 'dragHandle'>) { const m = messages[useUiStore((store) => store.locale)]; const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.task.id }); return <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? .55 : 1 }}><TaskRow {...props} dragHandle={<button className="drag-handle" {...attributes} {...listeners} aria-label={`${m.reorder} ${props.task.title}`}><GripVertical /></button>} /></div> }
+const SortableTaskRow = memo(function SortableTaskRow(props: Omit<TaskRowProps, 'dragHandle'>) { const m = messages[useUiStore((store) => store.locale)]; const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.task.id }); return <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? .55 : 1 }}><TaskRow {...props} dragHandle={<button className="drag-handle" {...attributes} {...listeners} aria-label={`${m.reorder} ${props.task.title}`}><GripVertical /></button>} /></div> })
 
 function TaskDetails({ task, lists, subtasks, onClose, onToggle, onPatch, onDelete, onMove, onCreateSubtask }: { task: TaskWithList; lists: GoogleTaskList[]; subtasks: Array<GoogleTask & { children: GoogleTask[] }>; onClose: () => void; onToggle: () => void; onPatch: (patch: TaskPatch) => void; onDelete: () => void; onMove: (id: string) => void; onCreateSubtask: (title: string) => void }) {
   const locale = useUiStore((store) => store.locale); const m = messages[locale]
