@@ -11,7 +11,7 @@ const seedLists: GoogleTaskList[] = [
 ]
 const seedTasks: Record<string, GoogleTask[]> = {
   work: [
-    { id: 'w1', title: 'Review Q4 product brief', notes: 'Focus on the new onboarding flow and open questions.', due: due(0), status: 'needsAction', position: pos(1), updated: now() },
+    { id: 'w1', title: 'Review Q4 product brief', notes: 'Focus on the new onboarding flow and open questions.', due: due(0), status: 'needsAction', position: pos(1), updated: now(), links: [{ type: 'email', description: 'Product brief discussion', link: 'https://mail.google.com/mail/#all/example' }, { type: 'generic', description: 'Product specification', link: 'https://example.com/specification' }] },
     { id: 'w1a', title: 'Check onboarding metrics', parent: 'w1', status: 'completed', completed: now(), position: pos(1), updated: now() },
     { id: 'w1b', title: 'Collect launch questions', parent: 'w1', status: 'needsAction', position: pos(2), updated: now() },
     { id: 'w2', title: 'Send updated launch timeline', notes: 'Share the revised milestones with the product team.', due: due(3), status: 'needsAction', position: pos(2), updated: now() },
