@@ -13,8 +13,8 @@ export default defineConfig(({ mode }) => {
         registerType: 'prompt',
         includeAssets: ['favicon.svg', 'icons/icon-192.svg', 'icons/icon-512.svg'],
         manifest: {
-          name: env.VITE_APP_NAME || 'TaskFlow',
-          short_name: env.VITE_APP_NAME || 'TaskFlow',
+          name: env.VITE_APP_NAME || 'TaskStride',
+          short_name: env.VITE_APP_NAME || 'TaskStride',
           description: 'A focused workspace for Google Tasks.',
           theme_color: '#5b5bd6',
           background_color: '#f6f7f9',

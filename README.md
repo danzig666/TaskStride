@@ -1,6 +1,6 @@
-# TaskFlow
+# TaskStride
 
-TaskFlow is a responsive, installable frontend for Google Tasks. It talks directly from the browser to Google Identity Services and the official Google Tasks REST API. There is no application backend, proprietary task database, or second account system.
+TaskStride is a responsive, installable frontend for Google Tasks. It talks directly from the browser to Google Identity Services and the official Google Tasks REST API. There is no application backend, proprietary task database, or second account system.
 
 > Screenshot placeholders: `docs/screenshots/desktop-light.png`, `desktop-dark.png`, and `mobile.png` can be added when publishing a branded release.
 
@@ -65,7 +65,7 @@ VITE_GOOGLE_CLIENT_ID=1234567890-example.apps.googleusercontent.com
 VITE_MOCK_MODE=false
 ```
 
-TaskFlow uses the Google Identity Services browser token model. Tokens are short-lived. When one expires, cached tasks remain visible in read-only mode and the user is asked to reconnect. A static SPA cannot securely hold a refresh token and TaskFlow does not simulate silent refresh.
+TaskStride uses the Google Identity Services browser token model. Tokens are short-lived. When one expires, cached tasks remain visible in read-only mode and the user is asked to reconnect. A static SPA cannot securely hold a refresh token and TaskStride does not simulate silent refresh.
 
 ## Configuration
 
@@ -73,7 +73,7 @@ TaskFlow uses the Google Identity Services browser token model. Tokens are short
 | --- | --- | --- |
 | `VITE_GOOGLE_CLIENT_ID` | Google Web OAuth client ID | unset |
 | `VITE_MOCK_MODE` | Use realistic local demo data | enabled when no client ID is present |
-| `VITE_APP_NAME` | App/manifest display name | `TaskFlow` |
+| `VITE_APP_NAME` | App/manifest display name | `TaskStride` |
 | `VITE_APP_BASE_PATH` | Deployment base, e.g. `/tasks/` | `/` |
 | `VITE_SOURCE_URL` | Open-source repository URL | unset |
 
@@ -104,7 +104,7 @@ Publish the generated `dist/` directory on any HTTPS static host. For a subpath,
 
 ```nginx
 location /tasks/ {
-    alias /var/www/taskflow/;
+    alias /var/www/taskstride/;
     try_files $uri $uri/ /tasks/index.html;
     add_header Content-Security-Policy "default-src 'self'; script-src 'self' https://accounts.google.com; connect-src 'self' https://tasks.googleapis.com https://oauth2.googleapis.com; frame-src https://accounts.google.com; img-src 'self' data:; style-src 'self' 'unsafe-inline'; base-uri 'self'; object-src 'none'; frame-ancestors 'self'" always;
 }
@@ -135,10 +135,10 @@ Use content-hashed cache headers for `assets/`, but serve `index.html`, `manifes
 
 ## Google Tasks API limitations
 
-- Due values contain a calendar date only. Google discards the time portion, so TaskFlow never offers due times or reminders.
-- Assigned and repeating tasks have move/nesting restrictions. TaskFlow disables or rejects unsupported operations.
+- Due values contain a calendar date only. Google discards the time portion, so TaskStride never offers due times or reminders.
+- Assigned and repeating tasks have move/nesting restrictions. TaskStride disables or rejects unsupported operations.
 - Repeating rules can be returned but are not reliably writable through the Tasks API, so there is no recurrence editor.
-- Google list colors do not exist in the Tasks data model; TaskFlow accents are local preferences only.
+- Google list colors do not exist in the Tasks data model; TaskStride accents are local preferences only.
 - Cross-list movement of recurring tasks is not supported by Google.
 - Browser access tokens expire and require a user-driven reconnect in a backend-free deployment.
 - Offline task mutations are disabled until a robust conflict-aware queue can be provided.

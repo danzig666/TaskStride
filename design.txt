@@ -1,6 +1,6 @@
 Build a complete, production-quality, open-source web application that acts as a beautiful modern frontend for **Google Tasks**.
 
-Working name: **TaskFlow**. Keep the name, logo and accent color easy to change from one configuration file.
+Working name: **TaskStride**. Keep the name, logo and accent color easy to change from one configuration file.
 
 The application must use the user's real Google Tasks data through the official Google Tasks API. Google Tasks must remain the source of truth. Do not create a separate cloud database, custom account system, or proprietary task store.
 
@@ -371,7 +371,7 @@ Approximately 240–280 px.
 
 Top:
 
-* small TaskFlow logo/wordmark
+* small TaskStride logo/wordmark
 * account/avatar control
 * sync state
 
@@ -1339,12 +1339,12 @@ On first launch, show an elegant single-screen welcome state.
 
 Content:
 
-TaskFlow
+TaskStride
 "Your Google Tasks, with a better workspace."
 
 Small secondary text:
 
-"Your tasks remain in Google Tasks. TaskFlow doesn't require its own task database."
+"Your tasks remain in Google Tasks. TaskStride doesn't require its own task database."
 
 Primary button:
 

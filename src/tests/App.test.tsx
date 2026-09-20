@@ -9,7 +9,7 @@ vi.mock('../db/cache', () => ({ cacheSnapshot: vi.fn(), clearCache: vi.fn(), rea
 
 const renderApp = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App /></QueryClientProvider>)
 
-describe('TaskFlow UI', () => {
+describe('TaskStride UI', () => {
   beforeEach(() => { localStorage.clear(); useUiStore.setState({ activeView: 'all', selectedTaskId: undefined, theme: 'system', density: 'comfortable', horizon: 7, favoriteLists: [], locale: 'en' }) })
   it('opens on All tasks and keeps it first in navigation', async () => { renderApp(); expect(await screen.findByRole('heading', { name: 'All tasks' })).toBeInTheDocument(); const buttons = screen.getByRole('navigation', { name: 'Smart views' }).querySelectorAll('button'); expect(buttons[0]).toHaveTextContent('All tasks') })
   it('quick-adds a task', async () => { const user = userEvent.setup(); renderApp(); const input = await screen.findByRole('textbox', { name: 'Add a task' }); await waitFor(() => expect(input).toBeEnabled()); await user.type(input, 'Plan next week{Enter}'); expect(await screen.findByRole('textbox', { name: 'Task details' })).toHaveValue('Plan next week') })
