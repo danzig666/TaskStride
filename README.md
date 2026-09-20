@@ -2,8 +2,6 @@
 
 TaskStride is a responsive, installable frontend for Google Tasks. It talks directly from the browser to Google Identity Services and the official Google Tasks REST API. There is no application backend, proprietary task database, or second account system.
 
-Live app: [tasks.koszeghy.art](https://tasks.koszeghy.art) (private, protected by Cloudflare Access)
-
 ## Screenshots
 
 ### Desktop
