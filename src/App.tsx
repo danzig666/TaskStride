@@ -122,8 +122,20 @@ export default function App() {
   const virtualTaskListHeight = import.meta.env.MODE === 'test' ? incomplete.length * 76 : taskVirtualizer.getTotalSize()
   const defaultListId = activeList?.id ?? data.lists[0]?.id
   const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }))
+  const openTaskDetails = useCallback((taskId: string) => {
+    if (window.matchMedia('(max-width: 767px)').matches && !selectedTaskId) window.history.pushState({ ...(window.history.state ?? {}), taskstrideDetail: taskId }, '')
+    selectTask(taskId)
+  }, [selectTask, selectedTaskId])
+  const closeTaskDetails = useCallback(() => {
+    if (window.history.state?.taskstrideDetail) window.history.back()
+    else selectTask(undefined)
+  }, [selectTask])
 
   useEffect(() => { if (taskListViewport.current) taskListViewport.current.scrollTop = 0 }, [activeView, query])
+  useEffect(() => {
+    const onPopState = (event: PopStateEvent) => selectTask(typeof event.state?.taskstrideDetail === 'string' ? event.state.taskstrideDetail : undefined)
+    window.addEventListener('popstate', onPopState); return () => window.removeEventListener('popstate', onPopState)
+  }, [selectTask])
 
   const optimisticMutation = useMutation({
     mutationFn: async ({ task, patch }: { task: TaskWithList; patch: TaskPatch }) => repository.patchTask(task.taskListId, task.id, patch),
@@ -150,8 +162,8 @@ export default function App() {
   }, [m.taskCompleted, m.taskReopened, m.undo, mutateTask])
 
   const deleteTask = async (task: TaskWithList) => {
-    const snapshot = { ...task }; queryClient.setQueryData<WorkspaceData>(['workspace', authVersion], (current) => current ? ({ ...current, tasks: current.tasks.filter((item) => item.id !== task.id && item.parent !== task.id) }) : current); selectTask(undefined)
-    try { await repository.deleteTask(task.taskListId, task.id); toast(m.taskDeleted, { action: { label: m.undo, onClick: async () => { const restored = await repository.createTask(task.taskListId, { title: snapshot.title, notes: snapshot.notes, due: snapshot.due }); await queryClient.invalidateQueries({ queryKey: ['workspace'] }); selectTask(restored.id) } } }) } catch (error) { await queryClient.invalidateQueries({ queryKey: ['workspace'] }); toast.error(error instanceof Error ? error.message : m.couldNotSave) }
+    const snapshot = { ...task }; queryClient.setQueryData<WorkspaceData>(['workspace', authVersion], (current) => current ? ({ ...current, tasks: current.tasks.filter((item) => item.id !== task.id && item.parent !== task.id) }) : current); closeTaskDetails()
+    try { await repository.deleteTask(task.taskListId, task.id); toast(m.taskDeleted, { action: { label: m.undo, onClick: async () => { const restored = await repository.createTask(task.taskListId, { title: snapshot.title, notes: snapshot.notes, due: snapshot.due }); await queryClient.invalidateQueries({ queryKey: ['workspace'] }); openTaskDetails(restored.id) } } }) } catch (error) { await queryClient.invalidateQueries({ queryKey: ['workspace'] }); toast.error(error instanceof Error ? error.message : m.couldNotSave) }
   }
 
   const refresh = async () => { await queryClient.invalidateQueries({ queryKey: ['workspace'] }); toast.success(m.refreshed) }
@@ -184,9 +196,9 @@ export default function App() {
       if (event.key === '/') { event.preventDefault(); setSearchOpen(true); setTimeout(() => document.querySelector<HTMLInputElement>('[data-global-search]')?.focus(), 0) }
       else if (['n', 'q'].includes(event.key.toLowerCase())) quickInput.current?.focus()
       else if (event.key === '?') setShortcutsOpen(true)
-      else if (event.key === 'Escape') { setCommandOpen(false); setSettingsOpen(false); setShortcutsOpen(false); selectTask(undefined) }
+      else if (event.key === 'Escape') { setCommandOpen(false); setSettingsOpen(false); setShortcutsOpen(false); closeTaskDetails() }
       else if (event.key === ' ' && selectedTask) { event.preventDefault(); toggleTask(selectedTask) }
-      else if (event.key === 'Enter' && !selectedTask && incomplete[0]) selectTask(incomplete[0].id)
+      else if (event.key === 'Enter' && !selectedTask && incomplete[0]) openTaskDetails(incomplete[0].id)
     }
     window.addEventListener('keydown', handler); return () => window.removeEventListener('keydown', handler)
   })
@@ -205,6 +217,7 @@ export default function App() {
   if (!connected && !data.tasks.length) return <Welcome onConnect={connect} />
 
   const navViews = (Object.entries(viewInfo) as [SmartView, typeof viewInfo[SmartView]][]).filter(([key]) => key !== 'assigned' || data.tasks.some((task) => task.assignmentInfo))
+  const viewTaskCount = smart === 'completed' ? completed.length : incomplete.length
   return <div className={`app ${selectedTask ? 'has-details' : ''}`} data-density={density} data-sidebar={useUiStore.getState().sidebarCollapsed ? 'collapsed' : 'open'}>
     <aside className={`sidebar ${mobileMenu ? 'sidebar-open' : ''}`}>
       <div className="brand"><span className="brand-mark"><Check /></span><span>TaskStride</span></div>
@@ -216,27 +229,27 @@ export default function App() {
     </aside>
 
     <main className="workspace">
-      <header className="mobile-topbar"><button onClick={() => setMobileMenu(true)} aria-label="Open navigation"><Menu /></button><strong>{viewLabel}</strong><button onClick={() => setSearchOpen(true)} aria-label="Search"><Search /></button></header>
+      <header className="mobile-topbar"><button onClick={() => setMobileMenu(true)} aria-label="Open navigation"><Menu /></button><strong>{viewLabel} ({viewTaskCount})</strong><button onClick={() => setSearchOpen(true)} aria-label="Search"><Search /></button></header>
       {syncState === 'reconnect' && <div className="reconnect-bar"><CloudOff /> {m.cachedReadonly} <button onClick={connect}>{m.reconnect}</button></div>}
       {syncState === 'offline' && <div className="reconnect-bar"><WifiOff /> {m.offlineCached}</div>}
       {syncState === 'error' && <div className="reconnect-bar"><CloudOff /> {m.syncErrorDetail} <button onClick={() => workspace.refetch()}>{m.retry}</button></div>}
       {syncState === 'syncing' && syncProgress && <div className="sync-progress" role="status" aria-label={m.syncing} aria-live="polite"><div><RefreshCw className="spinning" /><span>{syncProgress.phase === 'lists' ? m.syncLoadingLists : syncProgress.phase === 'saving' ? m.syncSaving : m.syncProgress.replace('{count}', String(syncProgress.downloaded)).replace('{done}', String(syncProgress.completedLists)).replace('{total}', String(syncProgress.totalLists))}</span></div><i aria-hidden="true"><span /></i></div>}
-      <header className="view-header"><div><p className="eyebrow">{new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</p><h1>{viewLabel}</h1><p>{incomplete.length ? (incomplete.length === 1 ? m.focusOne : m.focusMany.replace('{count}', String(incomplete.length))) : smart === 'today' ? m.nothingToday : m.noTasksHere}</p></div><div className="header-actions"><button className="icon-button" onClick={refresh} aria-label={m.refreshTasks}><RefreshCw className={workspace.isFetching ? 'spinning' : ''} /></button><button className="icon-button" onClick={() => setCommandOpen(true)} aria-label={m.commandMenu}><MoreHorizontal /></button></div></header>
+      <header className="view-header"><div><p className="eyebrow">{new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</p><h1>{viewLabel} ({viewTaskCount})</h1></div><div className="header-actions"><button className="icon-button" onClick={refresh} aria-label={m.refreshTasks}><RefreshCw className={workspace.isFetching ? 'spinning' : ''} /></button><button className="icon-button" onClick={() => setCommandOpen(true)} aria-label={m.commandMenu}><MoreHorizontal /></button></div></header>
       <section className="quick-add"><span className="quick-plus"><Plus /></span><input ref={quickInput} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createTask() }} aria-label={m.addATask} placeholder={defaultListId ? m.addTask : m.createListFirst} disabled={!defaultListId || !online || !connected} /><div className="quick-actions"><label className="date-control"><CalendarDays /><span>{m.date}</span><input type="date" value={quickDate} onChange={(event) => setQuickDate(event.target.value)} aria-label={m.dueDate} /></label><kbd>N</kbd></div></section>
-      <div className="filter-bar"><span>{visibleTasks.length} {m.tasks}</span><label className="task-filter"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.filterTasks} aria-label={m.filterTasks} />{query && <button type="button" onClick={() => setQuery('')} aria-label={m.clearFilter}><X /></button>}</label></div>
+      <div className="filter-bar"><label className="task-filter"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.filterTasks} aria-label={m.filterTasks} />{query && <button type="button" onClick={() => setQuery('')} aria-label={m.clearFilter}><X /></button>}</label></div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={sortableTaskIds} strategy={verticalListSortingStrategy}><section className="task-list" aria-label="Tasks" ref={taskListViewport}>
         {!incomplete.length && !completed.length && <EmptyState view={smart} query={query} onAdd={() => quickInput.current?.focus()} />}
-        <div className="virtual-task-list" style={{ height: virtualTaskListHeight }}>{virtualTaskRows.map((virtualRow) => { const task = incomplete[virtualRow.index]; return <div className="virtual-task-row" data-index={virtualRow.index} key={task.id} ref={taskVirtualizer.measureElement} style={{ transform: `translateY(${virtualRow.start}px)` }}>{activeList || smart === 'all' ? <SortableTaskRow task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} /> : <TaskRow task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} />}</div> })}</div>
-        {completed.length > 0 && <><button className="completed-heading"><ChevronDown /> Completed <span>{completed.length}</span></button>{completed.map((task) => <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={noSubtasks} onSelectTask={selectTask} onToggleTask={toggleTask} />)}</>}
+        <div className="virtual-task-list" style={{ height: virtualTaskListHeight }}>{virtualTaskRows.map((virtualRow) => { const task = incomplete[virtualRow.index]; return <div className="virtual-task-row" data-index={virtualRow.index} key={task.id} ref={taskVirtualizer.measureElement} style={{ transform: `translateY(${virtualRow.start}px)` }}>{activeList || smart === 'all' ? <SortableTaskRow task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={openTaskDetails} onToggleTask={toggleTask} /> : <TaskRow task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={openTaskDetails} onToggleTask={toggleTask} />}</div> })}</div>
+        {completed.length > 0 && <><button className="completed-heading"><ChevronDown /> Completed <span>{completed.length}</span></button>{completed.map((task) => <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={noSubtasks} onSelectTask={openTaskDetails} onToggleTask={toggleTask} />)}</>}
       </section></SortableContext></DndContext>
     </main>
 
-    {selectedTask && <TaskDetails key={selectedTask.id} task={selectedTask} lists={data.lists} subtasks={buildTaskTree(data.tasks.filter((task) => task.parent === selectedTask.id))} onClose={() => selectTask(undefined)} onToggle={() => toggleTask(selectedTask)} onPatch={(patch) => optimisticMutation.mutate({ task: selectedTask, patch })} onDelete={() => deleteTask(selectedTask)} onMove={async (destinationTasklist) => { const allowed = canMoveAcrossLists(selectedTask); if (!allowed.allowed) return toast.error(allowed.reason); await repository.moveTask({ taskListId: selectedTask.taskListId, taskId: selectedTask.id, destinationTasklist }); selectTask(undefined); await refresh() }} onCreateSubtask={async (title) => { await repository.createTask(selectedTask.taskListId, { title }, selectedTask.id); await refresh() }} />}
+    {selectedTask && <TaskDetails key={selectedTask.id} task={selectedTask} lists={data.lists} subtasks={buildTaskTree(data.tasks.filter((task) => task.parent === selectedTask.id))} onClose={closeTaskDetails} onToggle={() => toggleTask(selectedTask)} onPatch={(patch) => optimisticMutation.mutate({ task: selectedTask, patch })} onDelete={() => deleteTask(selectedTask)} onMove={async (destinationTasklist) => { const allowed = canMoveAcrossLists(selectedTask); if (!allowed.allowed) return toast.error(allowed.reason); await repository.moveTask({ taskListId: selectedTask.taskListId, taskId: selectedTask.id, destinationTasklist }); closeTaskDetails(); await refresh() }} onCreateSubtask={async (title) => { await repository.createTask(selectedTask.taskListId, { title }, selectedTask.id); await refresh() }} />}
     <nav className="bottom-nav" aria-label={m.mobileNavigation}><button className={activeView === 'all' ? 'active' : ''} onClick={() => setActiveView('all')}><ListTodo /><span>{m.tasksTab}</span></button><button className={activeView === 'today' ? 'active' : ''} onClick={() => setActiveView('today')}><Sparkles /><span>{m.todayTab}</span></button><button className="add-mobile" onClick={() => quickInput.current?.focus()}><Plus /></button><button className={activeView === 'upcoming' ? 'active' : ''} onClick={() => setActiveView('upcoming')}><CalendarDays /><span>{m.upcomingTab}</span></button><button onClick={() => setSearchOpen(true)}><Search /><span>{m.searchTab}</span></button></nav>
     {mobileMenu && <button className="scrim" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
     <button className="command-hint" onClick={() => setCommandOpen(true)}><Command />K</button>
 
-    {searchOpen && <Modal title={m.searchTasks} onClose={() => setSearchOpen(false)} className="search-modal"><div className="global-search"><Search /><input data-global-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.searchPlaceholder} /></div><div className="search-results">{searchTasks(data.tasks, query).slice(0, 12).map((task) => <button key={task.id} onClick={() => { selectTask(task.id); setSearchOpen(false) }}><span className="mini-check">{task.status === 'completed' && <Check />}</span><span><strong>{task.title}</strong><small>{task.taskListTitle}{task.due ? ` · ${formatDue(task.due, new Date(), locale === 'hu' ? huLocale : enUS)}` : ''}</small></span><ChevronRight /></button>)}</div></Modal>}
+    {searchOpen && <Modal title={m.searchTasks} onClose={() => setSearchOpen(false)} className="search-modal"><div className="global-search"><Search /><input data-global-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.searchPlaceholder} /></div><div className="search-results">{searchTasks(data.tasks, query).slice(0, 12).map((task) => <button key={task.id} onClick={() => { openTaskDetails(task.id); setSearchOpen(false) }}><span className="mini-check">{task.status === 'completed' && <Check />}</span><span><strong>{task.title}</strong><small>{task.taskListTitle}{task.due ? ` · ${formatDue(task.due, new Date(), locale === 'hu' ? huLocale : enUS)}` : ''}</small></span><ChevronRight /></button>)}</div></Modal>}
     {commandOpen && <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={(view) => { setActiveView(view); setCommandOpen(false) }} onCreate={() => { setCommandOpen(false); quickInput.current?.focus() }} onRefresh={() => { setCommandOpen(false); void refresh() }} onSettings={() => { setCommandOpen(false); setSettingsOpen(true) }} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onExport={exportTasks} onShortcuts={() => { setCommandOpen(false); setShortcutsOpen(true) }} />}
     {settingsOpen && <SettingsPanel theme={theme} density={density} horizon={horizon} locale={locale} onLocale={setLocale} onTheme={setTheme} onDensity={setDensity} onHorizon={setHorizon} onRefresh={refresh} onExport={exportTasks} onClear={async () => { await clearCache(); toast.success(m.cacheCleared) }} onDisconnect={async () => { googleAuth.disconnect(); await clearCache(); queryClient.clear(); setSettingsOpen(false) }} onClose={() => setSettingsOpen(false)} />}
     {shortcutsOpen && <Shortcuts onClose={() => setShortcutsOpen(false)} />}
