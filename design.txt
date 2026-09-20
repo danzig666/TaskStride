@@ -1,0 +1,1778 @@
+Build a complete, production-quality, open-source web application that acts as a beautiful modern frontend for **Google Tasks**.
+
+Working name: **TaskFlow**. Keep the name, logo and accent color easy to change from one configuration file.
+
+The application must use the user's real Google Tasks data through the official Google Tasks API. Google Tasks must remain the source of truth. Do not create a separate cloud database, custom account system, or proprietary task store.
+
+The result should feel like a premium native productivity application, not an admin dashboard and not a clone of Google's current Tasks UI.
+
+The application must work exceptionally well on:
+
+* desktop browsers
+* laptops
+* tablets
+* Android phones
+* iPhones
+* installed as a PWA
+
+It must provide equally polished **light and dark themes**.
+
+## 1. Core product philosophy
+
+The app should have the simplicity of Things / Todoist / Linear-style interfaces while remaining faithful to the Google Tasks data model.
+
+Prioritize:
+
+1. extremely fast interaction
+2. minimal visual clutter
+3. excellent typography
+4. useful information density
+5. keyboard efficiency on desktop
+6. touch efficiency on mobile
+7. immediate visual feedback
+8. excellent dark mode
+9. graceful Google API error handling
+10. no fake functionality that Google Tasks cannot actually synchronize
+
+Every task-changing action must ultimately modify the real Google Tasks resource.
+
+Do not create fake synchronized features such as:
+
+* priority fields
+* arbitrary tags
+* task colors
+* due times
+* reminders
+* recurrence rules
+
+unless the Google Tasks API genuinely exposes a reliable writable equivalent.
+
+Local-only UI preferences are allowed, but clearly keep them separate from task data.
+
+Examples of acceptable local-only state:
+
+* theme
+* compact/comfortable density
+* sidebar collapsed state
+* favorite task lists
+* list accent colors
+* last selected view
+* onboarding completed state
+
+## 2. Technical stack
+
+Use a modern TypeScript stack.
+
+Preferred:
+
+* React
+* TypeScript with strict mode
+* Vite
+* Tailwind CSS
+* shadcn/ui or high-quality Radix-based primitives where useful
+* Lucide icons
+* TanStack Query for server state
+* Zustand only for small amounts of client UI state
+* dnd-kit for accessible drag-and-drop
+* date-fns for date calculations
+* IndexedDB through Dexie or an equally lightweight abstraction for local cached data
+* Vite PWA plugin / Workbox for PWA support
+* Vitest
+* React Testing Library
+* Playwright for critical end-to-end tests
+
+Use current stable package versions rather than blindly pinning outdated versions.
+
+Avoid unnecessarily large dependencies.
+
+Do not use Next.js unless there is a concrete technical reason. The target is primarily a static SPA that can be hosted by nginx/Apache with no Node server running in production.
+
+## 3. Architecture
+
+The default deployment architecture should be:
+
+browser
+→ Google Identity Services
+→ Google Tasks REST API
+
+There should be **no application backend required for normal operation**.
+
+The generated build should consist of static assets that can be hosted from any HTTPS web server.
+
+Support both:
+
+* deployment at domain root
+* deployment below a configurable subpath such as `/tasks/`
+
+Do not hardcode the root path.
+
+Use environment configuration such as:
+
+* Google OAuth client ID
+* app base path
+* optional application display name
+
+Never include a Google client secret in frontend code.
+
+Never store OAuth access tokens in localStorage or IndexedDB.
+
+Keep OAuth tokens in memory.
+
+## 4. Google authentication
+
+Use **Google Identity Services**.
+
+For the zero-backend configuration, use Google's supported browser token model.
+
+Request only the Google Tasks read/write scope needed by the application.
+
+Implement:
+
+* Connect Google Account
+* account authorization
+* authorization error handling
+* expired-token detection
+* reconnect flow
+* revoke/disconnect flow
+* clear cached user task data when disconnecting
+
+Because browser access tokens are short-lived and cannot be silently refreshed with a server-side refresh token in this architecture, handle expiration elegantly.
+
+Do NOT create a fake silent-refresh implementation.
+
+When authorization expires:
+
+* keep the cached task UI visible
+* place the interface into a clearly identifiable disconnected/read-only state
+* display a small non-obtrusive "Reconnect Google" control
+* retry the requested action after reconnection when safe
+* never discard an unsaved user edit without warning
+
+The authorization state should not dominate the UI.
+
+## 5. Google Tasks API abstraction
+
+Create a dedicated typed API layer.
+
+Do not scatter raw fetch calls throughout components.
+
+Suggested structure:
+
+`src/api/googleTasks.ts`
+`src/auth/googleAuth.ts`
+`src/types/googleTasks.ts`
+`src/hooks/...`
+
+Implement typed methods for at least:
+
+### Task lists
+
+* list task lists
+* create task list
+* rename task list
+* delete task list
+
+### Tasks
+
+* list all tasks from a list
+* create task
+* update title
+* update notes
+* update due date
+* mark complete
+* mark incomplete
+* delete task
+* move task
+* reorder task
+* convert top-level task into subtask
+* move subtask back to top level
+* move a task to another task list
+* clear completed tasks
+* fetch individual task when required
+
+Correctly handle:
+
+* pagination
+* `nextPageToken`
+* `updatedMin`
+* completed tasks
+* hidden tasks
+* deleted tasks when performing incremental synchronization
+* assigned tasks where supported
+* API rate limits
+* network failures
+* authorization failures
+
+Use partial PATCH updates instead of full replacements where appropriate.
+
+Do not mutate output-only fields.
+
+## 6. Respect the real Google Tasks data model
+
+Model the API accurately.
+
+Important fields include concepts equivalent to:
+
+* id
+* title
+* notes
+* status
+* due
+* completed
+* parent
+* position
+* updated
+* etag
+* hidden
+* deleted
+* links
+* webViewLink
+* assignmentInfo
+
+### Critical due-date rule
+
+Google Tasks exposes a **date**, not a writable time-of-day.
+
+Therefore:
+
+* the UI must use date-only due dates
+* never show a fake due time
+* never offer "remind me at 16:00"
+* do not store an arbitrary time in the API value and pretend it will survive synchronization
+
+Use the user's local timezone only for interpreting/displaying the calendar date safely.
+
+Avoid common UTC conversion bugs where a task due today appears due yesterday or tomorrow.
+
+Write unit tests specifically for date handling around UTC offsets and DST boundaries.
+
+## 7. Repeating and assigned tasks
+
+Google can return task types that have restrictions not shared by ordinary tasks.
+
+Detect these gracefully.
+
+For assigned tasks originating in Google Docs or Google Chat:
+
+* show a subtle origin badge
+* display the assignment/source context if available
+* provide an "Open source" action when a source link exists
+* respect read-only fields
+* do not allow unsupported nesting operations
+* warn appropriately before destructive actions that can affect the original assignment
+
+If the task exposes Gmail/source links, show a small source icon and allow opening the source.
+
+For repeating/recurrent tasks returned by Google:
+
+* display them correctly
+* do not invent a recurrence editor if recurrence rules are not exposed as writable data
+* do not allow cross-list movement when Google disallows it
+* do not allow nesting actions Google disallows
+
+Prefer disabling unavailable controls with a concise tooltip rather than letting the API request fail.
+
+## 8. Synchronization model
+
+The UI should feel instant.
+
+Use:
+
+* TanStack Query cache
+* optimistic mutations
+* rollback on failure
+* background refresh
+* incremental synchronization where appropriate
+
+At application start:
+
+1. restore the cached view immediately from IndexedDB if available
+2. authenticate/reconnect if needed
+3. fetch task lists
+4. fetch current task data
+5. reconcile cache with Google
+
+After successful mutations:
+
+* update local UI immediately
+* send the API request
+* reconcile with the returned authoritative Google object
+
+When returning to the tab:
+
+* refresh stale data
+
+Also refresh when:
+
+* browser regains network
+* user explicitly pulls/requests refresh
+* app returns from background after a reasonable interval
+
+Do not hammer the Google API continuously.
+
+Provide a subtle sync-state indicator:
+
+* synced
+* syncing
+* offline
+* reconnect required
+* sync error
+
+Do not put a giant persistent "SYNCED" banner on screen.
+
+## 9. Offline behavior
+
+Make the PWA shell usable offline.
+
+Cache:
+
+* application assets
+* recent task lists
+* recent tasks
+* local UI preferences
+
+Offline requirements for the first production version:
+
+* existing cached tasks can be browsed
+* search works over cached data
+* task detail views work
+* theme/settings work
+
+For task mutations while fully offline, choose one of two safe approaches:
+
+A. implement a robust IndexedDB mutation queue with clear pending state and conflict recovery
+
+or
+
+B. initially make modifications unavailable offline and explain succinctly that reconnecting is required
+
+Do not implement a fragile half-working offline queue.
+
+If you implement queued offline writes, each queued item must have:
+
+* unique local mutation ID
+* creation timestamp
+* mutation type
+* task/list target
+* payload
+* processing status
+* retry count
+* failure reason
+
+Queued writes must be visible as pending.
+
+## 10. Desktop layout
+
+At desktop widths, use a refined multi-column interface.
+
+### Left sidebar
+
+Approximately 240–280 px.
+
+Top:
+
+* small TaskFlow logo/wordmark
+* account/avatar control
+* sync state
+
+Primary smart views:
+
+* Today
+* Upcoming
+* All tasks
+* No date
+* Completed
+* Assigned, only when applicable
+
+Use restrained icons.
+
+Below that:
+
+**My lists**
+
+Each Google Task list should show:
+
+* optional local accent dot
+* list name
+* active-task count
+* favorite/pinned state if enabled locally
+
+Allow:
+
+* create list
+* rename list
+* delete list
+* favorite list
+* reorder local presentation of favorites if desired
+
+Do not falsely claim local list presentation order changes Google if the API does not support that.
+
+Sidebar should be collapsible.
+
+Collapsed form can show icons/tooltips.
+
+### Main task column
+
+The main content area should be calm and spacious.
+
+Header:
+
+* current view/list name
+* task count
+* sort/display menu where applicable
+* overflow actions
+* optional refresh control
+
+Below header:
+
+**Quick add**
+
+A beautiful inline task-entry control.
+
+Pressing Enter creates the task.
+
+Allow an expanded mode for:
+
+* due date
+* target list
+* notes
+* parent task
+
+Use keyboard shortcuts.
+
+### Right detail pane
+
+On wide displays, selecting a task opens a persistent detail panel approximately 360–440 px wide.
+
+The selected task should remain visible in the center list.
+
+Detail pane fields:
+
+* completion checkbox
+* editable task title
+* due date
+* task list
+* parent/subtask status
+* notes
+* subtasks
+* source/origin information
+* updated information in a secondary menu
+* delete
+* open in Google Tasks when `webViewLink` exists
+
+Changes should save naturally with debouncing where sensible.
+
+Do not require a separate giant Save button for every simple edit.
+
+## 11. Tablet layout
+
+Use two primary panes:
+
+* sidebar/navigation
+* task content
+
+Task details should appear as a sliding panel or modal sheet.
+
+The application should remain fully touch-operable.
+
+## 12. Mobile layout
+
+Do not simply shrink the desktop layout.
+
+Design a dedicated mobile navigation model.
+
+Recommended structure:
+
+### Top bar
+
+* current smart view/list
+* compact account/sync indicator
+* search icon
+* overflow menu
+
+### Main list
+
+Full-width task rows with comfortable touch targets.
+
+### Bottom navigation
+
+Suggested:
+
+* Tasks
+* Today
+* Upcoming
+* Search
+
+Include a prominent but tasteful centered or floating **Add task** button.
+
+Alternative navigation is acceptable if UX testing suggests something cleaner.
+
+### Mobile task details
+
+Open task details as a full-height bottom sheet or dedicated mobile screen.
+
+It must have:
+
+* drag handle/back navigation
+* large completion control
+* title
+* date
+* list
+* notes
+* subtasks
+* source information
+* destructive actions separated visually
+
+Respect safe-area insets on iPhone/Android.
+
+The on-screen keyboard must not cover the quick-add controls.
+
+## 13. Visual design
+
+Aim for understated premium design.
+
+Not childish.
+Not excessively colorful.
+Not corporate dashboard styling.
+Not a Material Design clone.
+
+### Typography
+
+Use a modern variable sans serif, which look like Anthropic Sans used in Claude Code.
+
+Prefer:
+
+* Inter
+* system fallback stack
+
+Excellent hierarchy matters more than decorative fonts.
+
+### Radius
+
+Use moderately rounded geometry:
+
+* controls: roughly 8–10 px
+* cards/panels: roughly 12–16 px
+* pills: fully rounded where appropriate
+
+Avoid making every component a giant rounded bubble.
+
+### Light mode
+
+Use:
+
+* very light neutral background
+* near-white elevated surfaces
+* dark charcoal primary text
+* cool neutral secondary text
+* restrained borders
+* one elegant accent color
+
+Suggested accent direction: sophisticated indigo/blue-violet.
+
+### Dark mode
+
+Dark mode must be designed, not inverted.
+
+Use:
+
+* near-black / charcoal background
+* slightly lifted panel surfaces
+* soft borders
+* off-white primary text
+* muted gray secondary text
+* the same accent hue adjusted for sufficient contrast
+
+Avoid pure black everywhere.
+
+Avoid glowing neon effects.
+
+### Shadows
+
+Use extremely subtle shadows.
+
+Prefer border/tonal separation over large floating drop shadows.
+
+### Animation
+
+Use smooth 120–220 ms transitions for:
+
+* hover
+* task completion
+* drawer opening
+* sidebar collapse
+* drag/drop
+* toast entry
+* list insertion/removal
+
+Respect `prefers-reduced-motion`.
+
+Task completion can use a satisfying but understated animation.
+
+No excessive spring effects.
+
+## 14. Task row design
+
+Each task row should be information-rich without appearing busy.
+
+Recommended layout:
+
+* drag handle, desktop hover only
+* circular completion checkbox
+* title
+* optional second line for notes preview
+* due-date chip
+* source indicator when applicable
+* list name when inside a smart view
+* subtask count/progress
+* overflow menu
+
+Date chip states:
+
+* overdue: muted red emphasis
+* today: accent emphasis
+* future: neutral
+* completed: subdued
+
+Do not use loud saturated badge colors everywhere.
+
+Completed tasks should:
+
+* fade slightly
+* use tasteful strikethrough or muted title styling
+* remain readable
+
+Allow a collapsible **Completed** section at the bottom of normal list views.
+
+## 15. Smart views
+
+Smart views are computed locally across Google lists.
+
+They must never create separate copies of tasks.
+
+### Today
+
+Show incomplete tasks whose due date is today.
+
+Optionally include overdue tasks above them under an "Overdue" heading.
+
+### Upcoming
+
+Group incomplete dated tasks by day.
+
+Default horizon:
+
+* next 7 days
+
+Allow optional:
+
+* 14 days
+* 30 days
+
+### All tasks
+
+All incomplete tasks from all Google Task lists.
+
+Group by list by default.
+
+### No date
+
+All incomplete tasks without due dates.
+
+### Completed
+
+Completed tasks across all lists.
+
+Group sensibly and lazy-load if necessary.
+
+### Assigned
+
+Tasks originating from assignable Google surfaces when returned by the API.
+
+### Search
+
+Search locally over loaded/cached:
+
+* title
+* notes
+* list name
+
+Normalize case and accents appropriately.
+
+Highlight matches subtly.
+
+Search should feel instantaneous.
+
+## 16. Sorting
+
+Within an actual Google Task list, preserve Google's native manual order.
+
+Use the API `position` field as authoritative.
+
+When displaying smart views, allow local derived sorting without mutating Google ordering.
+
+Smart-view sort options may include:
+
+* due date
+* list
+* recently updated
+* title
+
+Manual drag ordering should only modify Google task position when the context represents a real task list.
+
+Make this distinction explicit in architecture.
+
+## 17. Drag-and-drop
+
+Desktop drag-and-drop should be excellent.
+
+Support:
+
+* reorder task among siblings
+* move task under another task
+* return subtask to top level
+* move task to another Google list
+* drop task onto a sidebar list
+* appropriate visual insertion markers
+
+Do not rely solely on drag/drop.
+
+Every move operation must also be possible through menus for accessibility and mobile use.
+
+During drag:
+
+* clearly indicate valid targets
+* indicate nesting intent
+* prevent invalid cyclic relationships
+* block operations prohibited for assigned/repeating tasks
+
+Use the Google Tasks move operation correctly with parent/previous/destination-list semantics.
+
+## 18. Subtasks
+
+Render subtasks hierarchically.
+
+A parent task row should optionally show:
+
+* number completed / total subtasks
+* expand/collapse control
+
+Task details should show its subtasks as an editable mini-list.
+
+Allow:
+
+* quick-create subtask
+* complete subtask
+* reorder subtasks
+* promote subtask to top-level
+* move allowed tasks under another parent
+
+Do not invent hierarchy levels that the API cannot represent reliably.
+
+Build the visible tree from the returned parent relationships, not from UI assumptions.
+
+## 19. Quick add
+
+Quick add should be one of the strongest features.
+
+Desktop shortcut:
+
+`Q` or `N`
+
+Global keyboard combination:
+
+`Ctrl/Cmd + K` opens command palette.
+
+Basic add flow:
+
+1. type task title
+2. press Enter
+3. task appears immediately through optimistic update
+
+Expose optional inline controls:
+
+* date
+* list
+* subtask parent
+* notes
+
+Remember the currently selected list as the default target.
+
+In a smart view, use a sensible configurable default Google list.
+
+Do not create hidden app-specific inbox lists without explicit user action.
+
+## 20. Date picker
+
+Create a beautiful compact date picker.
+
+Quick choices:
+
+* Today
+* Tomorrow
+* This weekend
+* Next week
+* No date
+
+Plus calendar selection.
+
+Dates are date-only.
+
+Display dates intelligently:
+
+* Today
+* Tomorrow
+* Yesterday
+* Mon, Sep 21
+* Sep 21 when appropriate
+* include year when necessary
+
+Use locale-aware formatting.
+
+## 21. Task detail editor
+
+The task editor should be fast enough that opening a task never feels like opening a form.
+
+Title:
+
+* editable inline
+* Enter behavior should be predictable
+* prevent accidental empty task titles where sensible
+
+Notes:
+
+* multiline plain-text editor
+* preserve line breaks
+* support clickable detected URLs
+* do not store hidden Markdown metadata in notes
+
+Date:
+
+* editable date-only control
+
+List:
+
+* dropdown with search if many lists
+
+Parent:
+
+* clear visual relationship
+* editable where allowed
+
+Origin:
+
+* Gmail / Docs / Chat / generic source indicator
+* source links
+* Google Tasks web link if available
+
+Use auto-save with:
+
+* short debounce for title/notes
+* immediate writes for checkboxes/date/list changes
+
+Indicate failed saves clearly.
+
+## 22. Completion behavior
+
+Checking a task should update immediately.
+
+Use optimistic UI.
+
+If the API operation fails:
+
+* restore previous state
+* show concise toast
+* provide Retry
+
+Support Undo for a short period after:
+
+* complete
+* delete
+* move
+
+Undo must execute an actual inverse API mutation where possible rather than only changing UI state.
+
+## 23. Delete behavior
+
+Single task delete:
+
+* optimistic removal
+* Undo toast
+
+Task-list deletion:
+
+* confirmation dialog
+* clearly state that the Google Task list will actually be deleted
+* never use a misleading generic confirmation
+
+Assigned tasks may have different deletion consequences; present a contextual warning when metadata indicates this.
+
+## 24. Command palette
+
+`Ctrl/Cmd + K`
+
+Beautiful fuzzy-search palette.
+
+Commands:
+
+* go to Today
+* go to Upcoming
+* go to list
+* search tasks
+* create task
+* create list
+* toggle dark mode
+* toggle sidebar
+* refresh
+* open settings
+* keyboard shortcuts
+* reconnect Google when required
+
+Keep command execution very fast.
+
+## 25. Keyboard shortcuts
+
+Implement desktop shortcuts and display them in a help overlay.
+
+Suggested:
+
+* `N` / `Q`: new task
+* `/`: search
+* `Cmd/Ctrl + K`: command palette
+* `J` / Down: next task
+* `K` / Up: previous task
+* `Enter`: open selected task
+* `Space`: toggle completion when appropriate
+* `E`: edit task
+* `D`: date
+* `M`: move
+* `Delete`: delete with safeguard
+* `Esc`: close drawer/dialog
+* `?`: shortcuts
+
+Do not activate shortcuts while the user is typing into editable fields unless intentionally scoped.
+
+## 26. Settings
+
+Minimal settings panel.
+
+Sections:
+
+### Appearance
+
+* System
+* Light
+* Dark
+* density: Comfortable / Compact
+* local accent color from a restrained preset
+
+### Behavior
+
+* default task list
+* include overdue in Today
+* upcoming horizon
+* show completed section
+* confirm destructive list deletion
+
+### Data
+
+* refresh now
+* clear local cache
+* disconnect Google account
+* revoke access where feasible
+
+### About
+
+* app version
+* open-source license
+* link to source repository configurable at build time
+
+## 27. PWA
+
+Make the application fully installable.
+
+Provide:
+
+* manifest
+* appropriate icons
+* maskable icon
+* theme color
+* light/dark theme integration
+* standalone display mode
+* service worker
+* cached app shell
+* sensible update flow
+
+When a new app version is available:
+
+show a small toast:
+
+"Update available — Reload"
+
+Do not unexpectedly reload while the user is editing.
+
+## 28. Responsive behavior
+
+Create explicit breakpoints and behavior rather than arbitrary CSS collapse.
+
+Suggested conceptual modes:
+
+### >= 1280 px
+
+Three-pane:
+sidebar + list + details
+
+### 768–1279 px
+
+Sidebar + list
+details as overlay sheet
+
+### < 768 px
+
+Dedicated mobile navigation and screens
+
+Test at common widths including:
+
+* 360
+* 390
+* 412
+* 768
+* 1024
+* 1366
+* 1440
+* 1920
+
+No horizontal scrolling.
+
+## 29. Accessibility
+
+Target WCAG AA where practical.
+
+Requirements:
+
+* full keyboard navigation
+* visible focus indicators
+* ARIA labels
+* screen-reader labels for icon-only controls
+* correct dialog focus traps
+* minimum touch targets around 44 px
+* sufficient dark/light contrast
+* no information conveyed solely through color
+* reduced-motion support
+* drag/drop alternative through menus
+
+Use semantic HTML.
+
+## 30. Performance
+
+Performance is a primary requirement.
+
+The UI should remain fluid with thousands of tasks.
+
+Implement:
+
+* efficient memoization where justified
+* list virtualization for genuinely large views
+* pagination
+* incremental task loading
+* minimal unnecessary renders
+* lazy-load secondary screens
+* local search indexing only when needed
+
+Avoid premature abstraction, but do not render 20,000 DOM rows at once.
+
+Provide skeleton states only when useful.
+
+Prefer cached data over blank-screen loaders.
+
+## 31. Error handling
+
+Create user-friendly handling for:
+
+* offline
+* Google login cancelled
+* permission denied
+* authorization expired
+* API 401
+* API 403
+* API 404
+* API 409 if encountered
+* rate limits
+* API 5xx
+* malformed cached data
+
+Do not expose raw JSON errors in ordinary UI.
+
+In development mode, log enough context for debugging.
+
+Include a copyable technical error detail under an expandable section when appropriate.
+
+## 32. Loading and empty states
+
+Avoid generic spinners everywhere.
+
+Use polished empty states.
+
+Examples:
+
+Today:
+"Nothing due today."
+
+No date:
+"Every task has a date."
+
+Search:
+"No tasks match your search."
+
+List:
+"No tasks yet."
+
+Completed:
+"No completed tasks."
+
+Keep illustrations minimal or omit them. Typography and whitespace should carry the design.
+
+## 33. Toasts
+
+Use restrained toast notifications.
+
+Examples:
+
+* Task completed
+* Task deleted — Undo
+* Moved to Personal
+* Couldn't save task — Retry
+* Google connection expired — Reconnect
+* Back online
+* You're offline
+
+Avoid a toast for every successful autosave.
+
+## 34. Local preferences and privacy
+
+Store only appropriate local information.
+
+Allowed in localStorage:
+
+* theme
+* density
+* panel sizes
+* selected view
+* favorite lists
+* local cosmetic colors
+
+Cached Google task contents should live in IndexedDB, not localStorage.
+
+OAuth token:
+
+* memory only
+* never persistent
+
+Provide a "Clear local data" command.
+
+Document these privacy properties in README.
+
+## 35. Security
+
+Follow secure SPA practices.
+
+Required:
+
+* no OAuth client secret in repository
+* no persistent access token storage
+* no unsafe HTML rendering
+* sanitize external URLs before opening
+* use `noopener,noreferrer` on new tabs
+* avoid `dangerouslySetInnerHTML`
+* validate API-derived object structure
+* environment variables intended for frontend must contain no secrets
+* configure a sensible Content Security Policy example in deployment documentation
+
+If adding external telemetry, it must be opt-in. Prefer no telemetry by default.
+
+## 36. API conflict strategy
+
+Google remains authoritative.
+
+If data changes remotely:
+
+* merge newly fetched authoritative task objects into cache
+* preserve pending local edits carefully
+* don't duplicate tasks
+* don't silently resurrect deleted tasks
+
+Use Google task IDs as canonical identity.
+
+Use ETags/updated timestamps for detecting changed objects where useful.
+
+If a conflict cannot safely be merged:
+
+* retain the remote authoritative object
+* preserve the user's unsaved text locally temporarily
+* explain the conflict
+* allow the user to copy/reapply their edit
+
+Never silently discard typed notes.
+
+## 37. API efficiency
+
+Use task list pagination.
+
+Use task pagination.
+
+Where beneficial, request only required response fields.
+
+Use `updatedMin` for incremental refresh where it produces correct synchronization.
+
+When doing incremental synchronization, ensure deleted/hidden items are handled correctly so stale tasks do not remain visible forever.
+
+Periodically perform a full reconciliation rather than relying indefinitely on incremental state.
+
+## 38. Application state model
+
+Keep state layers clear.
+
+### Server state
+
+TanStack Query:
+
+* task lists
+* tasks
+* task mutations
+* API sync timestamps
+
+### UI state
+
+Zustand/context:
+
+* selected task
+* sidebar state
+* active smart view
+* open dialogs
+* command palette
+* density
+
+### Persistent UI preferences
+
+localStorage.
+
+### Cached remote data
+
+IndexedDB.
+
+Do not copy all server data into Zustand.
+
+## 39. Suggested project structure
+
+Use a clean structure similar to:
+
+`src/`
+
+* `api/`
+* `auth/`
+* `components/`
+
+  * `app-shell/`
+  * `tasks/`
+  * `lists/`
+  * `details/`
+  * `navigation/`
+  * `ui/`
+* `features/`
+
+  * `smart-views/`
+  * `search/`
+  * `settings/`
+  * `command-palette/`
+* `hooks/`
+* `lib/`
+* `store/`
+* `types/`
+* `styles/`
+* `tests/`
+
+Avoid creating hundreds of single-use microscopic files.
+
+Keep domain logic outside React presentation components.
+
+## 40. Design tokens
+
+Use CSS variables/tokens.
+
+Define semantic values such as:
+
+* background
+* foreground
+* surface
+* surface-elevated
+* border
+* muted
+* muted-foreground
+* accent
+* accent-foreground
+* danger
+* warning
+* success
+* focus-ring
+
+Do not hardcode random colors throughout components.
+
+Light and dark modes should share semantic tokens.
+
+## 41. List accent colors
+
+Google Task lists do not provide arbitrary task-list colors through the normal Tasks model.
+
+Therefore optional list colors are a **local visual preference only**.
+
+Allow a small tasteful palette.
+
+Never imply that these colors will appear in Google's own Tasks application.
+
+Store them keyed by Google task-list ID.
+
+If a list disappears, eventually clean up orphaned local preferences.
+
+## 42. First-run experience
+
+On first launch, show an elegant single-screen welcome state.
+
+Content:
+
+TaskFlow
+"Your Google Tasks, with a better workspace."
+
+Small secondary text:
+
+"Your tasks remain in Google Tasks. TaskFlow doesn't require its own task database."
+
+Primary button:
+
+"Connect Google Tasks"
+
+Secondary small link:
+
+"How it works"
+
+No long onboarding carousel.
+
+After successful authorization:
+
+* load task lists
+* open Today if tasks exist
+* otherwise open the default list
+
+## 43. Account menu
+
+Small avatar/account menu.
+
+Actions:
+
+* account identifier if available
+* refresh
+* settings
+* reconnect
+* disconnect
+
+Do not add social/profile functionality.
+
+## 44. Search UX
+
+Desktop:
+
+press `/`
+
+Search overlay should appear immediately.
+
+Mobile:
+
+dedicated search screen.
+
+Search title and notes.
+
+Results should show:
+
+* title
+* matching excerpt
+* list name
+* due date
+* completion state
+
+Selecting result navigates to/selects the real task.
+
+## 45. Natural language
+
+Do not make natural-language task parsing a dependency of core task creation.
+
+If implemented, keep it conservative.
+
+Examples:
+
+`Pay electricity tomorrow`
+
+could optionally recognize tomorrow after clear user confirmation.
+
+Never silently strip words from a task title because a parser guessed incorrectly.
+
+A safer alternative is quick-action chips after typing.
+
+## 46. Internationalization readiness
+
+Initially ship English UI.
+
+Architect strings so future translation is straightforward.
+
+Use browser locale for:
+
+* dates
+* weekday names
+* number formatting
+
+Do not scatter non-configurable English sentences through domain logic.
+
+## 47. Testing requirements
+
+Write meaningful tests.
+
+### Unit tests
+
+At minimum:
+
+* due-date normalization
+* timezone edge cases
+* smart-view membership
+* overdue detection
+* hierarchy construction
+* sorting by Google position
+* incremental sync reconciliation
+* deleted-item handling
+* search
+* unsupported move detection
+
+### Component tests
+
+At minimum:
+
+* task row
+* quick add
+* task details
+* theme switcher
+* reconnect state
+* empty states
+
+### E2E
+
+Mock Google API responses.
+
+Test:
+
+1. connect/authenticated state
+2. load lists
+3. load tasks
+4. create task
+5. edit title
+6. change date
+7. complete task
+8. undo completion
+9. reorder task
+10. create subtask
+11. move task between lists
+12. search
+13. dark mode
+14. mobile navigation
+15. expired OAuth flow
+16. API failure rollback
+
+Tests must not require a real Google account.
+
+## 48. Development mock mode
+
+Provide a mock/demo development mode controlled by environment configuration.
+
+It should populate realistic sample data:
+
+* Work
+* Personal
+* House
+* Someday
+
+Include:
+
+* normal tasks
+* subtasks
+* completed tasks
+* overdue tasks
+* future tasks
+* undated tasks
+* notes
+* source-linked tasks
+* assigned-style mocked task metadata
+
+Mock mode must use the same repository/interface abstractions as the real API so UI behavior is representative.
+
+## 49. README
+
+Write a thorough README.
+
+Include:
+
+* screenshots placeholders
+* feature overview
+* architecture
+* prerequisites
+* local development
+* production build
+* Google Cloud project setup
+* enabling Google Tasks API
+* OAuth consent-screen configuration
+* creating a Web OAuth client ID
+* configuring authorized JavaScript origins
+* environment variables
+* static web deployment
+* deployment at a subpath
+* nginx example
+* Apache example
+* cache/PWA update considerations
+* security notes
+* privacy model
+* API limitations
+* troubleshooting OAuth
+* troubleshooting blank task lists
+* how to run tests
+
+Do not require users to edit source files simply to configure their Google client ID.
+
+## 50. Open-source quality
+
+Choose a sensible open-source license, preferably MIT unless project requirements dictate otherwise.
+
+Include:
+
+* LICENSE
+* `.gitignore`
+* `.env.example`
+* clean package scripts
+* formatting
+* linting
+* type checking
+
+Expected scripts:
+
+* dev
+* build
+* preview
+* test
+* test:e2e
+* lint
+* typecheck
+
+A clean checkout followed by dependency installation and build should succeed.
+
+## 51. Acceptance criteria
+
+The project is not finished until all of these are true:
+
+* production build succeeds
+* TypeScript has no errors
+* lint passes
+* unit tests pass
+* critical E2E tests pass
+* app works with mocked data
+* real Google Tasks adapter is implemented
+* Google OAuth integration is implemented
+* light theme is polished
+* dark theme is polished
+* mobile UI is intentionally designed
+* desktop UI is intentionally designed
+* PWA installs successfully
+* task creation works
+* task editing works
+* completion works
+* deletion works
+* list management works
+* due dates work without timezone drift
+* subtasks work
+* manual ordering works
+* cross-list moves work where supported
+* prohibited moves are guarded in UI
+* smart views work
+* search works
+* reconnect state works
+* cached read-only offline mode works
+* no client secret is required
+* no private backend database is required
+* README is complete
+
+## 52. Implementation order
+
+Implement in this order:
+
+### Phase 1 — foundation
+
+* project scaffold
+* design tokens
+* theme system
+* route/layout shell
+* mock data layer
+* responsive architecture
+
+### Phase 2 — core UI
+
+* sidebar
+* mobile navigation
+* task lists
+* task rows
+* task detail pane
+* quick add
+* smart views
+* search
+
+### Phase 3 — interaction
+
+* CRUD
+* completion
+* dates
+* subtasks
+* drag/drop
+* moving between lists
+* keyboard shortcuts
+* command palette
+
+### Phase 4 — Google integration
+
+* GIS authentication
+* typed Tasks API adapter
+* pagination
+* mutation integration
+* reconnect logic
+* sync/reconciliation
+
+### Phase 5 — persistence/PWA
+
+* IndexedDB cache
+* service worker
+* offline states
+* installability
+* application-update UX
+
+### Phase 6 — quality
+
+* accessibility
+* animations
+* loading states
+* error handling
+* tests
+* README
+* final responsive polish
+
+Do not leave core functionality as TODO comments.
+
+## 53. Visual quality bar
+
+Do not consider the project complete merely because functionality works.
+
+Spend real effort on visual polish.
+
+Inspect each major view at both light and dark theme in:
+
+* 390 px phone
+* 768 px tablet
+* 1440 px desktop
+
+Check:
+
+* alignment
+* line-height
+* spacing rhythm
+* border contrast
+* icon sizing
+* hover/focus states
+* empty states
+* scroll behavior
+* selected states
+* drawer transitions
+* date chips
+* task hierarchy
+* completed states
+
+The final UI should look intentionally designed by a professional product designer.
+
+Avoid:
+
+* giant headings
+* excessive gradients
+* glassmorphism everywhere
+* excessive shadows
+* huge blank cards
+* rainbow-colored lists
+* unnecessary dashboard statistics
+* gamification
+* cartoon illustrations
+* productivity "scores"
+* fake AI features
+
+## 54. Desktop reference composition
+
+A typical 1440 px screen should approximately feel like:
+
+LEFT:
+compact navigation/sidebar
+
+CENTER:
+focused task workspace occupying most visual attention
+
+RIGHT:
+task detail panel only while needed
+
+The task list must be the visual hero, not navigation chrome.
+
+## 55. Mobile reference composition
+
+A typical 390 px phone should feel like a high-quality native app:
+
+* edge-to-edge content
+* small top navigation
+* readable task rows
+* generous touch targets
+* fast bottom navigation
+* easy add button
+* smooth full-screen task details
+* excellent keyboard avoidance
+* no desktop-style sidebar hacks
+
+## 56. Final execution instructions
+
+Do not respond with merely an architecture proposal.
+
+Actually create the application.
+
+Start by creating the project structure and mock data mode, then implement features iteratively.
+
+After each major phase:
+
+* run type checking
+* run tests
+* fix errors before proceeding
+
+Use screenshots/browser inspection during implementation if your environment supports it.
+
+When a design detail is unspecified, make a strong sensible product-design decision rather than stopping for clarification.
+
+When Google API behavior is uncertain, consult the current official Google Tasks API documentation instead of guessing.
+
+Never emulate unsupported Google functionality and present it as synchronized.
+
+At completion provide:
+
+1. concise architecture summary
+2. completed feature list
+3. setup instructions
+4. Google OAuth configuration steps
+5. development commands
+6. production build/deployment instructions
+7. known Google Tasks API limitations
+8. test results
+9. any genuinely unfinished items
+
+The finished result should be something a user could realistically choose over Google's own Tasks interface for everyday use.
+Also add an export to downloadable file function.

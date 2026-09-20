@@ -1,0 +1,11 @@
+node_modules
+dist
+.env
+.env.local
+playwright-report
+test-results
+coverage
+.sites-runtime
+.playwright-cli
+output
+*.tsbuildinfo

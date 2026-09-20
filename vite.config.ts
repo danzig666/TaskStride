@@ -1,0 +1,36 @@
+import { defineConfig, loadEnv } from 'vite'
+import react from '@vitejs/plugin-react'
+import { VitePWA } from 'vite-plugin-pwa'
+
+export default defineConfig(({ mode }) => {
+  const env = loadEnv(mode, process.cwd(), '')
+  const base = env.VITE_APP_BASE_PATH || '/'
+  return {
+    base,
+    plugins: [
+      react(),
+      VitePWA({
+        registerType: 'prompt',
+        includeAssets: ['favicon.svg', 'icons/icon-192.svg', 'icons/icon-512.svg'],
+        manifest: {
+          name: env.VITE_APP_NAME || 'TaskFlow',
+          short_name: env.VITE_APP_NAME || 'TaskFlow',
+          description: 'A focused workspace for Google Tasks.',
+          theme_color: '#5b5bd6',
+          background_color: '#f6f7f9',
+          display: 'standalone',
+          start_url: base,
+          scope: base,
+          icons: [
+            { src: 'icons/icon-192.svg', sizes: '192x192', type: 'image/svg+xml', purpose: 'any' },
+            { src: 'icons/icon-512.svg', sizes: '512x512', type: 'image/svg+xml', purpose: 'any maskable' }
+          ]
+        },
+        workbox: {
+          globPatterns: ['**/*.{js,css,html,svg,woff2}'],
+          navigateFallback: 'index.html'
+        }
+      })
+    ]
+  }
+})
