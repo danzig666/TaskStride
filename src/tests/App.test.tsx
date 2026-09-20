@@ -5,7 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
 import { useUiStore } from '../store/uiStore'
 
-vi.mock('../db/cache', () => ({ cacheSnapshot: vi.fn(), clearCache: vi.fn(), readSnapshot: vi.fn(async () => ({ lists: [], tasks: [] })) }))
+vi.mock('../db/cache', () => ({ cacheSnapshot: vi.fn(), clearCache: vi.fn(), readSnapshot: vi.fn(async () => ({ lists: [], tasks: [] })), syncCacheVersion: '2' }))
 
 const renderApp = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App /></QueryClientProvider>)
 

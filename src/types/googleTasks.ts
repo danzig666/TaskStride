@@ -70,6 +70,7 @@ export interface ListTasksOptions {
   showCompleted?: boolean
   showDeleted?: boolean
   showHidden?: boolean
+  showAssigned?: boolean
   maxResults?: number
 }
 

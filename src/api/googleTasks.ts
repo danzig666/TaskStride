@@ -55,7 +55,7 @@ export class GoogleTasksRepository implements TaskRepository {
     const query = new URLSearchParams()
     for (const [key, value] of Object.entries(options)) if (value !== undefined) query.set(key, String(value))
     if (!query.has('maxResults')) query.set('maxResults', '100')
-    query.set('fields', 'nextPageToken,items(id,title,notes,status,due,completed,parent,position,updated,deleted,hidden,links,webViewLink,assignmentInfo,recurrence)')
+    query.set('fields', 'nextPageToken,items(id,title,notes,status,due,completed,parent,position,updated,deleted,hidden,links,webViewLink,assignmentInfo)')
     return this.request<Page<GoogleTask>>(`/lists/${encodeURIComponent(taskListId)}/tasks?${query}`)
   }
   getTask(taskListId: string, taskId: string) { return this.request<GoogleTask>(`/lists/${encodeURIComponent(taskListId)}/tasks/${encodeURIComponent(taskId)}`) }

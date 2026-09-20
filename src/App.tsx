@@ -12,7 +12,7 @@ import { toast } from 'sonner'
 import { enUS, hu as huLocale } from 'date-fns/locale'
 import { repository, mockMode } from './api/repository'
 import { googleAuth } from './auth/googleAuth'
-import { cacheSnapshot, clearCache, readSnapshot } from './db/cache'
+import { cacheSnapshot, clearCache, readSnapshot, syncCacheVersion } from './db/cache'
 import { dateKeyToGoogleDue, dueToDateKey, formatDue, isOverdue } from './lib/dates'
 import { messages, type AppLocale } from './i18n'
 import { buildTaskTree, canMoveAcrossLists, inSmartView, reconcileTasks, searchTasks, sortByGoogleOrder, sortByPosition, type SmartView } from './lib/tasks'
@@ -28,13 +28,13 @@ const accents = ['indigo', 'coral', 'teal', 'amber']
 
 async function fetchWorkspace(): Promise<WorkspaceData> {
   const syncStartedAt = new Date().toISOString()
-  const snapshot = await readSnapshot().catch(() => ({ lists: [], tasks: [], lastSync: undefined }))
+  const snapshot = await readSnapshot().catch(() => ({ lists: [], tasks: [], lastSync: undefined, syncVersion: undefined }))
   const lists = await repository.listTaskLists()
   const cachedListIds = new Set(snapshot.lists.map((list) => list.id))
   const tasks = (await Promise.all(lists.map(async (list) => {
-    const incremental = Boolean(snapshot.lastSync && cachedListIds.has(list.id))
+    const incremental = Boolean(snapshot.lastSync && snapshot.syncVersion === syncCacheVersion && cachedListIds.has(list.id))
     const incoming: GoogleTask[] = []; let pageToken: string | undefined
-    do { const page = await repository.listTasks(list.id, { pageToken, updatedMin: incremental ? snapshot.lastSync : undefined, showCompleted: true, showDeleted: incremental, showHidden: true, maxResults: 100 }); incoming.push(...(page.items ?? [])); pageToken = page.nextPageToken } while (pageToken)
+    do { const page = await repository.listTasks(list.id, { pageToken, updatedMin: incremental ? snapshot.lastSync : undefined, showCompleted: true, showDeleted: incremental, showHidden: true, showAssigned: true, maxResults: 100 }); incoming.push(...(page.items ?? [])); pageToken = page.nextPageToken } while (pageToken)
     const cached = snapshot.tasks.filter((task) => task.taskListId === list.id)
     const ordered = incremental ? reconcileTasks(cached, incoming) : sortByPosition(incoming.filter((task) => !task.deleted))
     return ordered.map((task) => ({ ...task, taskListId: list.id, taskListTitle: list.title }))
