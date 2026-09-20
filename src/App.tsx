@@ -40,10 +40,17 @@ async function fetchWorkspace(onProgress: (progress: SyncProgress) => void): Pro
   onProgress({ phase: 'tasks', downloaded, completedLists, totalLists: lists.length })
   const tasks = (await Promise.all(lists.map(async (list) => {
     const incremental = Boolean(snapshot.lastSync && snapshot.syncVersion === syncCacheVersion && cachedListIds.has(list.id))
-    const incoming: GoogleTask[] = []; let pageToken: string | undefined
-    do { const page = await repository.listTasks(list.id, { pageToken, updatedMin: incremental ? snapshot.lastSync : undefined, showCompleted: true, showDeleted: incremental, showHidden: true, showAssigned: true, maxResults: 100 }); incoming.push(...(page.items ?? [])); downloaded += page.items?.length ?? 0; onProgress({ phase: 'tasks', downloaded, completedLists, totalLists: lists.length }); pageToken = page.nextPageToken } while (pageToken)
-    const cached = snapshot.tasks.filter((task) => task.taskListId === list.id)
-    const ordered = incremental ? reconcileTasks(cached, incoming) : sortByPosition(incoming.filter((task) => !task.deleted))
+    const incoming: GoogleTask[] = []; const seenTaskIds = new Set<string>(); const seenPageTokens = new Set<string>(); let pageToken: string | undefined
+    do {
+      const page = await repository.listTasks(list.id, { pageToken, updatedMin: incremental ? snapshot.lastSync : undefined, showCompleted: true, showDeleted: incremental, showHidden: incremental, showAssigned: true, maxResults: 100 })
+      for (const task of page.items ?? []) if (!seenTaskIds.has(task.id)) { seenTaskIds.add(task.id); incoming.push(task); downloaded += 1 }
+      onProgress({ phase: 'tasks', downloaded, completedLists, totalLists: lists.length })
+      if (page.nextPageToken && seenPageTokens.has(page.nextPageToken)) throw new Error('Google Tasks returned a repeated page while synchronizing.')
+      if (page.nextPageToken) seenPageTokens.add(page.nextPageToken)
+      pageToken = page.nextPageToken
+    } while (pageToken)
+    const cached = snapshot.tasks.filter((task) => task.taskListId === list.id && !task.hidden)
+    const ordered = (incremental ? reconcileTasks(cached, incoming) : sortByPosition(incoming.filter((task) => !task.deleted))).filter((task) => !task.hidden)
     completedLists += 1
     onProgress({ phase: 'tasks', downloaded, completedLists, totalLists: lists.length })
     return ordered.map((task) => ({ ...task, taskListId: list.id, taskListTitle: list.title }))
