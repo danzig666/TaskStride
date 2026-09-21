@@ -1,6 +1,6 @@
 # TaskStride
 
-TaskStride is a responsive, installable frontend for Google Tasks. It talks directly from the browser to Google Identity Services and the official Google Tasks REST API. There is no application backend, proprietary task database, or second account system.
+TaskStride is a responsive, installable frontend for Google Tasks. It talks directly from the browser to Google Identity Services and the official Google Tasks REST API. There is no proprietary task database or second account system; the only server-side code is the optional authorization backend in `functions/`, which keeps a Google session alive for longer than an hour.
 
 ## Screenshots
 
@@ -18,10 +18,13 @@ TaskStride is a responsive, installable frontend for Google Tasks. It talks dire
 
 - All tasks is the default, top navigation view, with Today, Upcoming, No date, Completed, and Assigned views available below it.
 - Fast task creation, completion, editing, deletion with Undo, date-only due dates, notes, subtasks, manual ordering, and cross-list movement.
+- Manual ordering by dragging a row anywhere on its surface: a mouse starts a drag after a few pixels of travel, touch after a short hold so swiping still scrolls, and a keyboard activator on each row covers assistive technology.
+- On phones the task composer is summoned by the add button in the bottom bar instead of permanently occupying the top of the list.
 - Typed Google Tasks adapter with pagination, PATCH updates, task/list CRUD, move semantics, clear-completed support, and friendly API errors.
-- Google Identity Services token flow. Access tokens are kept in session storage until expiry so page reloads stay connected; disconnecting clears them.
+- Google Identity Services with an optional authorization backend. Deployed with `functions/`, the refresh token stays in a sealed HttpOnly cookie and sessions survive reloads, new tabs and days away; without it, the in-tab token flow is used and a reconnect is needed roughly every hour.
 - Responsive three-pane desktop, tablet sheet, and dedicated mobile navigation.
-- Instant local search, command menu, keyboard shortcuts, dark mode, comfortable/compact density, JSON export, and list-specific task counts.
+- Instant local search, command menu, keyboard shortcuts, dark mode, comfortable/compact density, and list-specific task counts.
+- JSON export and a merging import: importing only creates the tasks that are missing. A task is skipped when its id already exists, or when the destination list already holds a task with the same title and the same due date. Missing lists are created, subtasks are reattached to their parent, and completed tasks are imported as completed.
 - Complete English and Hungarian interface selectable in Settings; the preference is stored locally.
 - IndexedDB cache for read-only offline browsing; offline writes are intentionally disabled in this release.
 - PWA manifest, service worker, install icons, cached app shell, and update-ready configuration.
@@ -75,19 +78,38 @@ VITE_GOOGLE_CLIENT_ID=1234567890-example.apps.googleusercontent.com
 VITE_MOCK_MODE=false
 ```
 
-TaskStride uses the Google Identity Services browser token model. Tokens are short-lived. When one expires, cached tasks remain visible in read-only mode and the user is asked to reconnect. A static SPA cannot securely hold a refresh token and TaskStride does not simulate silent refresh.
+TaskStride runs in either of two authorization modes and picks one automatically at startup by
+probing `POST /api/token`.
+
+**Authorization backend (recommended).** The `functions/` directory is a Cloudflare Pages
+Functions backend that exchanges the Google auth code server-side, seals the refresh token into
+an `HttpOnly; Secure; SameSite=Lax` cookie with AES-GCM, and hands the browser only short-lived
+access tokens. The app renews them five minutes before expiry, when the tab becomes visible and
+after any 401 from Google, so a session lasts as long as Google keeps the grant. See
+[docs/cloudflare-setup.md](docs/cloudflare-setup.md); the Google consent screen must be
+published **In production**, or Google expires refresh tokens after seven days.
+
+**No backend.** When the endpoints are absent or unconfigured, TaskStride falls back to the
+browser token model. Access tokens live one hour, are kept in session storage so reloads stay
+connected, and cannot be refreshed silently: cached tasks stay visible read-only and the user
+reconnects by hand.
 
 ## Configuration
 
 | Variable | Purpose | Default |
 | --- | --- | --- |
-| `VITE_GOOGLE_CLIENT_ID` | Google Web OAuth client ID | unset |
+| `VITE_GOOGLE_CLIENT_ID` | Google Web OAuth client ID, read at build time | unset |
+| `VITE_AUTH_API_BASE` | Base path of the authorization backend | `/api` |
 | `VITE_MOCK_MODE` | Use realistic local demo data | enabled when no client ID is present |
 | `VITE_APP_NAME` | App/manifest display name | `TaskStride` |
 | `VITE_APP_BASE_PATH` | Deployment base, e.g. `/tasks/` | `/` |
 | `VITE_SOURCE_URL` | Open-source repository URL | unset |
 
 Never put a Google client secret in any `VITE_` variable. Vite exposes these variables to the browser.
+
+The authorization backend reads its own runtime variables, which are **not** prefixed and are
+never exposed to the browser: `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET` and `SESSION_SECRET`.
+See [docs/cloudflare-setup.md](docs/cloudflare-setup.md).
 
 ## Commands
 
@@ -109,6 +131,14 @@ npm run build
 ```
 
 Publish the generated `dist/` directory on any HTTPS static host. For a subpath, build with `VITE_APP_BASE_PATH=/tasks/` and serve the SPA fallback from the same path.
+
+### Cloudflare Pages
+
+Build with `npm run build`, publish `dist/`, and Pages deploys `functions/` alongside it.
+`public/_headers` carries the Content-Security-Policy and cache headers, and
+`public/_routes.json` keeps the worker off the static asset paths. Configuring the three
+backend variables enables long-lived sessions; leaving them out keeps the deployment static.
+Full walkthrough: [docs/cloudflare-setup.md](docs/cloudflare-setup.md).
 
 ### nginx
 
@@ -136,7 +166,9 @@ Use content-hashed cache headers for `assets/`, but serve `index.html`, `manifes
 
 ## Privacy and security
 
-- OAuth access tokens exist only in JavaScript memory. They are not written to localStorage, sessionStorage, cookies, or IndexedDB.
+- With the authorization backend, the refresh token is encrypted and stored in an HttpOnly cookie that page scripts cannot read, and the access token exists only in JavaScript memory.
+- Without a backend, the access token is kept in session storage for the lifetime of the tab. It is never written to localStorage, cookies, or IndexedDB.
+- Client secrets live only in Cloudflare secrets. They are never placed in a `VITE_` variable, which Vite would inline into the browser bundle.
 - Task contents are cached in IndexedDB on the current device for offline browsing.
 - localStorage contains only UI preferences such as theme, density, selected view, and favorites.
 - **Clear local cache** deletes the IndexedDB task snapshot. **Disconnect Google** also clears cached task data.
@@ -150,7 +182,7 @@ Use content-hashed cache headers for `assets/`, but serve `index.html`, `manifes
 - Repeating rules can be returned but are not reliably writable through the Tasks API, so there is no recurrence editor.
 - Google list colors do not exist in the Tasks data model; TaskStride accents are local preferences only.
 - Cross-list movement of recurring tasks is not supported by Google.
-- Browser access tokens expire and require a user-driven reconnect in a backend-free deployment.
+- Browser access tokens expire after an hour and require a user-driven reconnect in a backend-free deployment; deploy `functions/` to avoid this.
 - Offline task mutations are disabled until a robust conflict-aware queue can be provided.
 
 ## Troubleshooting

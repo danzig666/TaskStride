@@ -1,13 +1,13 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useVirtualizer } from '@tanstack/react-virtual'
-import { DndContext, PointerSensor, KeyboardSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
+import { DndContext, MouseSensor, TouchSensor, KeyboardSensor, closestCenter, useSensor, useSensors, type DragEndEvent } from '@dnd-kit/core'
 import { SortableContext, arrayMove, sortableKeyboardCoordinates, verticalListSortingStrategy, useSortable } from '@dnd-kit/sortable'
 import { CSS } from '@dnd-kit/utilities'
 import {
   ArrowUpRight, CalendarDays, Check, CheckCircle2, ChevronDown, ChevronRight,
   Circle, Cloud, CloudOff, Command, Download, GripVertical, Inbox, Keyboard, Link2, ListTodo,
-  Mail, Menu, Moon, MoreHorizontal, Plus, RefreshCw, Search, Settings, Sparkles, Trash2, WifiOff, X,
+  Mail, Menu, Moon, MoreHorizontal, Plus, RefreshCw, Search, Settings, Sparkles, Trash2, Upload, WifiOff, X,
 } from 'lucide-react'
 import { toast } from 'sonner'
 import { enUS, hu as huLocale } from 'date-fns/locale'
@@ -17,6 +17,7 @@ import { cacheSnapshot, clearCache, readSnapshot, syncCacheVersion } from './db/
 import { dateKeyToGoogleDue, dueToDateKey, formatDue, isOverdue } from './lib/dates'
 import { messages, type AppLocale } from './i18n'
 import { buildTaskTree, canMoveAcrossLists, inSmartView, reconcileTasks, searchTasks, sortByGoogleOrder, sortByPosition, type SmartView } from './lib/tasks'
+import { parseImportFile, planImport } from './lib/importTasks'
 import { useUiStore } from './store/uiStore'
 import type { GoogleTask, GoogleTaskList, TaskPatch, TaskWithList } from './types/googleTasks'
 
@@ -28,6 +29,15 @@ const viewInfo: Record<SmartView, { labelKey: 'all' | 'today' | 'upcoming' | 'no
 }
 const accents = ['indigo', 'coral', 'teal', 'amber']
 const noSubtasks: GoogleTask[] = []
+
+function readTextFile(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(String(reader.result))
+    reader.onerror = () => reject(reader.error ?? new Error('The file could not be read.'))
+    reader.readAsText(file)
+  })
+}
 
 async function fetchWorkspace(onProgress: (progress: SyncProgress) => void): Promise<WorkspaceData> {
   const syncStartedAt = new Date().toISOString()
@@ -73,13 +83,16 @@ export default function App() {
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [shortcutsOpen, setShortcutsOpen] = useState(false)
   const [searchOpen, setSearchOpen] = useState(false)
+  const [composerOpen, setComposerOpen] = useState(false)
   const [syncProgress, setSyncProgress] = useState<SyncProgress | null>(null)
   const [online, setOnline] = useState(navigator.onLine)
   const quickInput = useRef<HTMLInputElement>(null)
+  const importInput = useRef<HTMLInputElement>(null)
   const taskListViewport = useRef<HTMLElement>(null)
   const connected = mockMode || googleAuth.connected
 
   useEffect(() => { const listener = () => setAuthVersion((value) => value + 1); googleAuth.addEventListener('change', listener); return () => googleAuth.removeEventListener('change', listener) }, [])
+  useEffect(() => { void googleAuth.restore() }, [])
   useEffect(() => { readSnapshot().then((snapshot) => { if (snapshot.lists.length) queryClient.setQueryData(['workspace', authVersion], { lists: snapshot.lists, tasks: snapshot.tasks }) }).catch(() => undefined) }, [queryClient, authVersion])
   useEffect(() => { const onOnline = () => { setOnline(true); toast.success(messages[useUiStore.getState().locale].backOnline); queryClient.invalidateQueries({ queryKey: ['workspace'] }) }; const onOffline = () => { setOnline(false); toast(messages[useUiStore.getState().locale].offline) }; window.addEventListener('online', onOnline); window.addEventListener('offline', onOffline); return () => { window.removeEventListener('online', onOnline); window.removeEventListener('offline', onOffline) } }, [queryClient])
   useEffect(() => { const resolved = theme === 'system' ? (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light') : theme; document.documentElement.dataset.theme = resolved }, [theme])
@@ -121,7 +134,26 @@ export default function App() {
   const virtualTaskRows = import.meta.env.MODE === 'test' ? incomplete.map((_, index) => ({ index, start: index * 76 })) : taskVirtualizer.getVirtualItems()
   const virtualTaskListHeight = import.meta.env.MODE === 'test' ? incomplete.length * 76 : taskVirtualizer.getTotalSize()
   const defaultListId = activeList?.id ?? data.lists[0]?.id
-  const sensors = useSensors(useSensor(PointerSensor, { activationConstraint: { distance: 6 } }), useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }))
+  // Rows drag as a whole: a mouse needs a few pixels of travel before a click becomes a drag,
+  // and touch needs a short hold so swiping still scrolls the list.
+  const sensors = useSensors(
+    useSensor(MouseSensor, { activationConstraint: { distance: 6 } }),
+    useSensor(TouchSensor, { activationConstraint: { delay: 220, tolerance: 8 } }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  )
+  const composerReady = Boolean(defaultListId) && online && connected
+  const focusComposer = useCallback(() => {
+    setComposerOpen(true)
+    quickInput.current?.focus()
+  }, [])
+  // On phones the composer is hidden until it is opened, and its input stays disabled until
+  // the lists arrive, so focus is claimed once it is both on screen and usable.
+  useEffect(() => {
+    if (!composerOpen || !composerReady) return
+    const input = quickInput.current
+    if (!input || document.activeElement?.closest('.quick-add')) return
+    input.focus()
+  }, [composerOpen, composerReady])
   const openTaskDetails = useCallback((taskId: string) => {
     if (window.matchMedia('(max-width: 767px)').matches && !selectedTaskId) window.history.pushState({ ...(window.history.state ?? {}), taskstrideDetail: taskId }, '')
     selectTask(taskId)
@@ -167,8 +199,47 @@ export default function App() {
   }
 
   const refresh = async () => { await queryClient.invalidateQueries({ queryKey: ['workspace'] }); toast.success(m.refreshed) }
-  const connect = async () => { try { await googleAuth.connect(''); await queryClient.invalidateQueries({ queryKey: ['workspace'] }) } catch (error) { toast.error(error instanceof Error ? error.message : 'Couldn’t connect Google') } }
+  const connect = async () => { try { await googleAuth.connect(); await queryClient.invalidateQueries({ queryKey: ['workspace'] }) } catch (error) { toast.error(error instanceof Error ? error.message : 'Couldn’t connect Google') } }
   const exportTasks = () => { const blob = new Blob([JSON.stringify({ exportedAt: new Date().toISOString(), lists: data.lists, tasks: data.tasks }, null, 2)], { type: 'application/json' }); const url = URL.createObjectURL(blob); const anchor = document.createElement('a'); anchor.href = url; anchor.download = `taskstride-export-${new Date().toISOString().slice(0, 10)}.json`; anchor.click(); URL.revokeObjectURL(url); toast.success(m.exported) }
+
+  const importTasksFromFile = async (file: File) => {
+    if (!online || !connected) return toast.error(m.importOffline)
+    const parsed = await readTextFile(file).then((raw) => parseImportFile(JSON.parse(raw))).catch(() => null)
+    if (!parsed) return toast.error(m.importInvalid)
+
+    const plan = planImport(parsed, data)
+    if (!plan.entries.length) return toast.success(m.importNothing)
+    const progress = (processed: number) => m.importing.replace('{done}', String(processed)).replace('{total}', String(plan.entries.length))
+    const toastId = toast.loading(progress(0))
+    let processed = 0
+    let created = 0
+    let failed = 0
+    try {
+      const createdListIds = new Map<string, string>()
+      for (const title of plan.newListTitles) createdListIds.set(title, (await repository.createTaskList(title)).id)
+      const createdTaskIds = new Map<string, string>()
+      for (const entry of plan.entries) {
+        processed += 1
+        if (processed % 5 === 0) toast.loading(progress(processed), { id: toastId })
+        const taskListId = entry.listId ?? createdListIds.get(entry.listTitle)
+        if (!taskListId) { failed += 1; continue }
+        const parent = (entry.parentSourceId ? createdTaskIds.get(entry.parentSourceId) : undefined) ?? entry.parentExistingId
+        let task: GoogleTask | undefined
+        try { task = await repository.createTask(taskListId, { title: entry.title, notes: entry.notes, due: entry.due }, parent) } catch { failed += 1 }
+        if (!task) continue
+        created += 1
+        if (entry.sourceId) createdTaskIds.set(entry.sourceId, task.id)
+        // A task that imported but could not be marked complete is still an imported task.
+        if (entry.completed) await repository.patchTask(taskListId, task.id, { status: 'completed', completed: entry.completedAt ?? new Date().toISOString() }).catch(() => undefined)
+      }
+      await queryClient.invalidateQueries({ queryKey: ['workspace'] })
+      const summary = m.importDone.replace('{created}', String(created)).replace('{skipped}', String(plan.skipped))
+      toast.success(failed ? `${summary} · ${m.importFailed.replace('{failed}', String(failed))}` : summary, { id: toastId })
+    } catch (error) {
+      await queryClient.invalidateQueries({ queryKey: ['workspace'] })
+      toast.error(error instanceof Error ? error.message : m.importInvalid, { id: toastId })
+    }
+  }
 
   const onDragEnd = async ({ active, over }: DragEndEvent) => {
     if (!over || active.id === over.id) return
@@ -194,7 +265,7 @@ export default function App() {
       if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') { event.preventDefault(); setCommandOpen(true); return }
       if (editable) return
       if (event.key === '/') { event.preventDefault(); setSearchOpen(true); setTimeout(() => document.querySelector<HTMLInputElement>('[data-global-search]')?.focus(), 0) }
-      else if (['n', 'q'].includes(event.key.toLowerCase())) quickInput.current?.focus()
+      else if (['n', 'q'].includes(event.key.toLowerCase())) focusComposer()
       else if (event.key === '?') setShortcutsOpen(true)
       else if (event.key === 'Escape') { setCommandOpen(false); setSettingsOpen(false); setShortcutsOpen(false); closeTaskDetails() }
       else if (event.key === ' ' && selectedTask) { event.preventDefault(); toggleTask(selectedTask) }
@@ -214,11 +285,12 @@ export default function App() {
     return () => lifecycle.abort()
   }, [data.lists, data.tasks, defaultListId, queryClient, viewLabel, visibleTasks])
 
+  if (!googleAuth.ready && !data.tasks.length) return <Booting />
   if (!connected && !data.tasks.length) return <Welcome onConnect={connect} />
 
   const navViews = (Object.entries(viewInfo) as [SmartView, typeof viewInfo[SmartView]][]).filter(([key]) => key !== 'assigned' || data.tasks.some((task) => task.assignmentInfo))
   const viewTaskCount = smart === 'completed' ? completed.length : incomplete.length
-  return <div className={`app ${selectedTask ? 'has-details' : ''}`} data-density={density} data-sidebar={useUiStore.getState().sidebarCollapsed ? 'collapsed' : 'open'}>
+  return <div className={`app ${selectedTask ? 'has-details' : ''}`} data-density={density} data-composer={composerOpen ? 'open' : 'closed'} data-sidebar={useUiStore.getState().sidebarCollapsed ? 'collapsed' : 'open'}>
     <aside className={`sidebar ${mobileMenu ? 'sidebar-open' : ''}`}>
       <div className="brand"><span className="brand-mark"><Check /></span><span>TaskStride</span></div>
       <button className="account-card" onClick={mockMode ? undefined : connect}><span className="avatar">{mockMode ? 'DE' : 'G'}</span><span className="account-copy"><strong>{mockMode ? m.demo : connected ? m.googleTasks : m.reconnectGoogle}</strong><small><i className={syncState} /> <SyncLabel state={syncState} /></small></span><ChevronDown size={15} /></button>
@@ -235,28 +307,30 @@ export default function App() {
       {syncState === 'error' && <div className="reconnect-bar"><CloudOff /> {m.syncErrorDetail} <button onClick={() => workspace.refetch()}>{m.retry}</button></div>}
       {syncState === 'syncing' && syncProgress && <div className="sync-progress" role="status" aria-label={m.syncing} aria-live="polite"><div><RefreshCw className="spinning" /><span>{syncProgress.phase === 'lists' ? m.syncLoadingLists : syncProgress.phase === 'saving' ? m.syncSaving : m.syncProgress.replace('{count}', String(syncProgress.downloaded)).replace('{done}', String(syncProgress.completedLists)).replace('{total}', String(syncProgress.totalLists))}</span></div><i aria-hidden="true"><span /></i></div>}
       <header className="view-header"><div><p className="eyebrow">{new Intl.DateTimeFormat(locale, { weekday: 'long', month: 'long', day: 'numeric' }).format(new Date())}</p><h1>{viewLabel} ({viewTaskCount})</h1></div><div className="header-actions"><button className="icon-button" onClick={refresh} aria-label={m.refreshTasks}><RefreshCw className={workspace.isFetching ? 'spinning' : ''} /></button><button className="icon-button" onClick={() => setCommandOpen(true)} aria-label={m.commandMenu}><MoreHorizontal /></button></div></header>
-      <section className="quick-add"><span className="quick-plus"><Plus /></span><input ref={quickInput} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createTask() }} aria-label={m.addATask} placeholder={defaultListId ? m.addTask : m.createListFirst} disabled={!defaultListId || !online || !connected} /><div className="quick-actions"><label className="date-control"><CalendarDays /><span>{m.date}</span><input type="date" value={quickDate} onChange={(event) => setQuickDate(event.target.value)} aria-label={m.dueDate} /></label><kbd>N</kbd></div></section>
+      <section className={`quick-add${composerOpen ? ' is-open' : ''}`} onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null) && !quickTitle.trim()) setComposerOpen(false) }}><span className="quick-plus"><Plus /></span><input ref={quickInput} value={quickTitle} onChange={(event) => setQuickTitle(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createTask(); else if (event.key === 'Escape') { setComposerOpen(false); event.currentTarget.blur() } }} aria-label={m.addATask} placeholder={defaultListId ? m.addTask : m.createListFirst} disabled={!defaultListId || !online || !connected} /><div className="quick-actions"><label className="date-control"><CalendarDays /><span>{m.date}</span><input type="date" value={quickDate} onChange={(event) => setQuickDate(event.target.value)} aria-label={m.dueDate} /></label><kbd>N</kbd></div></section>
       <div className="filter-bar"><label className="task-filter"><Search /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.filterTasks} aria-label={m.filterTasks} />{query && <button type="button" onClick={() => setQuery('')} aria-label={m.clearFilter}><X /></button>}</label></div>
       <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={onDragEnd}><SortableContext items={sortableTaskIds} strategy={verticalListSortingStrategy}><section className="task-list" aria-label="Tasks" ref={taskListViewport}>
-        {!incomplete.length && !completed.length && <EmptyState view={smart} query={query} onAdd={() => quickInput.current?.focus()} />}
+        {!incomplete.length && !completed.length && <EmptyState view={smart} query={query} onAdd={focusComposer} />}
         <div className="virtual-task-list" style={{ height: virtualTaskListHeight }}>{virtualTaskRows.map((virtualRow) => { const task = incomplete[virtualRow.index]; return <div className="virtual-task-row" data-index={virtualRow.index} key={task.id} ref={taskVirtualizer.measureElement} style={{ transform: `translateY(${virtualRow.start}px)` }}>{activeList || smart === 'all' ? <SortableTaskRow task={task} selected={selectedTaskId === task.id} showList={smart === 'all'} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={openTaskDetails} onToggleTask={toggleTask} /> : <TaskRow task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={subtasksByParent.get(task.id) ?? noSubtasks} onSelectTask={openTaskDetails} onToggleTask={toggleTask} />}</div> })}</div>
         {completed.length > 0 && <><button className="completed-heading"><ChevronDown /> Completed <span>{completed.length}</span></button>{completed.map((task) => <TaskRow key={task.id} task={task} selected={selectedTaskId === task.id} showList={Boolean(smart)} subtasks={noSubtasks} onSelectTask={openTaskDetails} onToggleTask={toggleTask} />)}</>}
       </section></SortableContext></DndContext>
     </main>
 
     {selectedTask && <TaskDetails key={selectedTask.id} task={selectedTask} lists={data.lists} subtasks={buildTaskTree(data.tasks.filter((task) => task.parent === selectedTask.id))} onClose={closeTaskDetails} onToggle={() => toggleTask(selectedTask)} onPatch={(patch) => optimisticMutation.mutate({ task: selectedTask, patch })} onDelete={() => deleteTask(selectedTask)} onMove={async (destinationTasklist) => { const allowed = canMoveAcrossLists(selectedTask); if (!allowed.allowed) return toast.error(allowed.reason); await repository.moveTask({ taskListId: selectedTask.taskListId, taskId: selectedTask.id, destinationTasklist }); closeTaskDetails(); await refresh() }} onCreateSubtask={async (title) => { await repository.createTask(selectedTask.taskListId, { title }, selectedTask.id); await refresh() }} />}
-    <nav className="bottom-nav" aria-label={m.mobileNavigation}><button className={activeView === 'all' ? 'active' : ''} onClick={() => setActiveView('all')}><ListTodo /><span>{m.tasksTab}</span></button><button className={activeView === 'today' ? 'active' : ''} onClick={() => setActiveView('today')}><Sparkles /><span>{m.todayTab}</span></button><button className="add-mobile" onClick={() => quickInput.current?.focus()}><Plus /></button><button className={activeView === 'upcoming' ? 'active' : ''} onClick={() => setActiveView('upcoming')}><CalendarDays /><span>{m.upcomingTab}</span></button><button onClick={() => setSearchOpen(true)}><Search /><span>{m.searchTab}</span></button></nav>
+    <nav className="bottom-nav" aria-label={m.mobileNavigation}><button className={activeView === 'all' ? 'active' : ''} onClick={() => setActiveView('all')}><ListTodo /><span>{m.tasksTab}</span></button><button className={activeView === 'today' ? 'active' : ''} onClick={() => setActiveView('today')}><Sparkles /><span>{m.todayTab}</span></button><button className="add-mobile" aria-label={m.addTaskMobile} onClick={focusComposer}><Plus /></button><button className={activeView === 'upcoming' ? 'active' : ''} onClick={() => setActiveView('upcoming')}><CalendarDays /><span>{m.upcomingTab}</span></button><button onClick={() => setSearchOpen(true)}><Search /><span>{m.searchTab}</span></button></nav>
+    <input ref={importInput} className="visually-hidden" type="file" accept="application/json,.json" aria-label={m.importTasks} onChange={(event) => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void importTasksFromFile(file) }} />
     {mobileMenu && <button className="scrim" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
     <button className="command-hint" onClick={() => setCommandOpen(true)}><Command />K</button>
 
     {searchOpen && <Modal title={m.searchTasks} onClose={() => setSearchOpen(false)} className="search-modal"><div className="global-search"><Search /><input data-global-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.searchPlaceholder} /></div><div className="search-results">{searchTasks(data.tasks, query).slice(0, 12).map((task) => <button key={task.id} onClick={() => { openTaskDetails(task.id); setSearchOpen(false) }}><span className="mini-check">{task.status === 'completed' && <Check />}</span><span><strong>{task.title}</strong><small>{task.taskListTitle}{task.due ? ` · ${formatDue(task.due, new Date(), locale === 'hu' ? huLocale : enUS)}` : ''}</small></span><ChevronRight /></button>)}</div></Modal>}
-    {commandOpen && <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={(view) => { setActiveView(view); setCommandOpen(false) }} onCreate={() => { setCommandOpen(false); quickInput.current?.focus() }} onRefresh={() => { setCommandOpen(false); void refresh() }} onSettings={() => { setCommandOpen(false); setSettingsOpen(true) }} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onExport={exportTasks} onShortcuts={() => { setCommandOpen(false); setShortcutsOpen(true) }} />}
-    {settingsOpen && <SettingsPanel theme={theme} density={density} horizon={horizon} locale={locale} onLocale={setLocale} onTheme={setTheme} onDensity={setDensity} onHorizon={setHorizon} onRefresh={refresh} onExport={exportTasks} onClear={async () => { await clearCache(); toast.success(m.cacheCleared) }} onDisconnect={async () => { googleAuth.disconnect(); await clearCache(); queryClient.clear(); setSettingsOpen(false) }} onClose={() => setSettingsOpen(false)} />}
+    {commandOpen && <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={(view) => { setActiveView(view); setCommandOpen(false) }} onCreate={() => { setCommandOpen(false); focusComposer() }} onRefresh={() => { setCommandOpen(false); void refresh() }} onSettings={() => { setCommandOpen(false); setSettingsOpen(true) }} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onExport={exportTasks} onImport={() => { setCommandOpen(false); importInput.current?.click() }} onShortcuts={() => { setCommandOpen(false); setShortcutsOpen(true) }} />}
+    {settingsOpen && <SettingsPanel theme={theme} density={density} horizon={horizon} locale={locale} onLocale={setLocale} onTheme={setTheme} onDensity={setDensity} onHorizon={setHorizon} onRefresh={refresh} onExport={exportTasks} onImport={() => importInput.current?.click()} onClear={async () => { await clearCache(); toast.success(m.cacheCleared) }} onDisconnect={async () => { googleAuth.disconnect(); await clearCache(); queryClient.clear(); setSettingsOpen(false) }} onClose={() => setSettingsOpen(false)} />}
     {shortcutsOpen && <Shortcuts onClose={() => setShortcutsOpen(false)} />}
   </div>
 }
 
 function SyncLabel({ state }: { state: 'synced' | 'syncing' | 'offline' | 'reconnect' | 'error' }) { const m = messages[useUiStore((store) => store.locale)]; return <>{({ synced: m.synced, syncing: m.syncing, offline: m.offline, reconnect: m.reconnectRequired, error: m.syncError })[state]}</> }
+function Booting() { const m = messages[useUiStore((store) => store.locale)]; return <main className="welcome"><div className="welcome-card" role="status" aria-live="polite"><span className="welcome-logo"><Check /></span><h1>TaskStride</h1><p className="welcome-lead">{m.syncing}</p></div></main> }
 function Welcome({ onConnect }: { onConnect: () => void }) { const m = messages[useUiStore((store) => store.locale)]; return <main className="welcome"><div className="welcome-card"><span className="welcome-logo"><Check /></span><h1>TaskStride</h1><p className="welcome-lead">{m.welcomeLead}</p><p>{m.welcomePrivacy}</p><button className="primary-button" onClick={onConnect}>{m.connectGoogle} <ArrowUpRight /></button><button className="text-button" onClick={() => toast(m.welcomePrivacy)}>{m.howItWorks}</button></div></main> }
 
 type TaskRowProps = { task: TaskWithList; selected: boolean; showList: boolean; subtasks: GoogleTask[]; onSelectTask: (taskId: string) => void; onToggleTask: (task: TaskWithList) => void; dragHandle?: React.ReactNode }
@@ -269,12 +343,34 @@ const TaskRow = memo(function TaskRow({ task, selected, showList, subtasks, onSe
   const updatedAt = task.updated ? new Intl.DateTimeFormat(locale, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(task.updated)) : undefined
   return <article className={`task-row ${selected ? 'selected' : ''} ${task.status === 'completed' ? 'is-complete' : ''}`} onClick={() => onSelectTask(task.id)} tabIndex={0} onKeyDown={(event) => event.key === 'Enter' && onSelectTask(task.id)}>
     {dragHandle}<button className="check" onClick={(event) => { event.stopPropagation(); onToggleTask(task) }} aria-label={`${task.status === 'completed' ? m.markIncomplete : m.complete} ${task.title}`}>{task.status === 'completed' && <Check />}</button>
-    <div className="task-copy"><div className="task-title-line"><strong>{task.title}</strong>{emailLink?.link && <a className="task-email-link" href={emailLink.link} target="_blank" rel="noopener noreferrer" title={emailLink.description ?? m.openEmail} aria-label={`${m.openEmail}: ${emailLink.description ?? task.title}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><Mail /><span>{emailLink.description?.trim() || 'Gmail'}</span></a>}</div>{task.notes && <p>{task.notes}</p>}<div className="meta">{task.due && <span className={`due ${isOverdue(task.due) ? 'overdue' : dueLabel === 'Today' ? 'today' : ''}`}><CalendarDays />{localizedDue}</span>}{showList && <span>{task.taskListTitle}</span>}{updatedAt && <time dateTime={task.updated} title={task.updated}>{m.updated} {updatedAt}</time>}{subtasks.length > 0 && <span>{completedChildren}/{subtasks.length} {m.subtasks.toLocaleLowerCase(locale)}</span>}{task.assignmentInfo && <span className="source-badge">{task.assignmentInfo.surfaceType === 'DOCUMENT' ? 'Docs' : m.assigned}</span>}</div></div>
+    <div className="task-copy"><div className="task-title-line"><strong>{task.title}</strong>{emailLink?.link && <a className="task-email-link" draggable={false} href={emailLink.link} target="_blank" rel="noopener noreferrer" title={emailLink.description ?? m.openEmail} aria-label={`${m.openEmail}: ${emailLink.description ?? task.title}`} onClick={(event) => event.stopPropagation()} onKeyDown={(event) => event.stopPropagation()}><Mail /><span>{emailLink.description?.trim() || 'Gmail'}</span></a>}</div>{task.notes && <p>{task.notes}</p>}<div className="meta">{task.due && <span className={`due ${isOverdue(task.due) ? 'overdue' : dueLabel === 'Today' ? 'today' : ''}`}><CalendarDays />{localizedDue}</span>}{showList && <span>{task.taskListTitle}</span>}{updatedAt && <time dateTime={task.updated} title={task.updated}>{m.updated} {updatedAt}</time>}{subtasks.length > 0 && <span>{completedChildren}/{subtasks.length} {m.subtasks.toLocaleLowerCase(locale)}</span>}{task.assignmentInfo && <span className="source-badge">{task.assignmentInfo.surfaceType === 'DOCUMENT' ? 'Docs' : m.assigned}</span>}</div></div>
     <button className="row-menu" aria-label={m.taskActions}><MoreHorizontal /></button>
   </article>
 })
 
-const SortableTaskRow = memo(function SortableTaskRow(props: Omit<TaskRowProps, 'dragHandle'>) { const m = messages[useUiStore((store) => store.locale)]; const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({ id: props.task.id }); return <div ref={setNodeRef} style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? .55 : 1 }}><TaskRow {...props} dragHandle={<button className="drag-handle" {...attributes} {...listeners} aria-label={`${m.reorder} ${props.task.title}`}><GripVertical /></button>} /></div> })
+const SortableTaskRow = memo(function SortableTaskRow(props: Omit<TaskRowProps, 'dragHandle'>) {
+  const m = messages[useUiStore((store) => store.locale)]
+  const { attributes, listeners, setNodeRef, setActivatorNodeRef, transform, transition, isDragging } = useSortable({ id: props.task.id })
+  // Pointer and touch dragging live on the row; the keyboard activator keeps its own handle.
+  const { onKeyDown, ...pointerListeners } = listeners ?? {}
+  const dragged = useRef(false)
+  useEffect(() => {
+    if (isDragging) { dragged.current = true; return }
+    if (!dragged.current) return
+    // A finished drag still fires a click on the row, which must not open the task.
+    const timer = setTimeout(() => { dragged.current = false }, 250)
+    return () => clearTimeout(timer)
+  }, [isDragging])
+  return <div
+    ref={setNodeRef}
+    className={`sortable-task${isDragging ? ' is-dragging' : ''}`}
+    style={{ transform: CSS.Transform.toString(transform), transition, opacity: isDragging ? .55 : 1 }}
+    {...pointerListeners}
+    onClickCapture={(event) => { if (!dragged.current) return; dragged.current = false; event.stopPropagation(); event.preventDefault() }}
+  >
+    <TaskRow {...props} dragHandle={<button className="drag-keyboard" ref={setActivatorNodeRef} {...attributes} onKeyDown={onKeyDown as React.KeyboardEventHandler<HTMLButtonElement> | undefined} aria-label={`${m.reorder} ${props.task.title}`}><GripVertical /></button>} />
+  </div>
+})
 
 function TaskDetails({ task, lists, subtasks, onClose, onToggle, onPatch, onDelete, onMove, onCreateSubtask }: { task: TaskWithList; lists: GoogleTaskList[]; subtasks: Array<GoogleTask & { children: GoogleTask[] }>; onClose: () => void; onToggle: () => void; onPatch: (patch: TaskPatch) => void; onDelete: () => void; onMove: (id: string) => void; onCreateSubtask: (title: string) => void }) {
   const locale = useUiStore((store) => store.locale); const m = messages[locale]
@@ -293,6 +389,6 @@ function TaskDetails({ task, lists, subtasks, onClose, onToggle, onPatch, onDele
 
 function EmptyState({ view, query, onAdd }: { view: SmartView | null; query: string; onAdd: () => void }) { const m = messages[useUiStore((store) => store.locale)]; const text = query ? m.noSearch : view === 'today' ? m.nothingToday : view === 'no-date' ? m.everyHasDate : view === 'completed' ? m.noCompleted : m.noTasks; return <div className="empty-state"><CheckCircle2 /><strong>{text}</strong>{!query && view !== 'completed' && <button onClick={onAdd}>{m.addATask}</button>}</div> }
 function Modal({ title, onClose, children, className = '' }: { title: string; onClose: () => void; children: React.ReactNode; className?: string }) { const m = messages[useUiStore((store) => store.locale)]; return <div className="modal-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label={m.close}><X /></button></header>{children}</section></div> }
-function CommandPalette({ onClose, onNavigate, onCreate, onRefresh, onSettings, onTheme, onExport, onShortcuts }: { onClose: () => void; onNavigate: (view: SmartView) => void; onCreate: () => void; onRefresh: () => void; onSettings: () => void; onTheme: () => void; onExport: () => void; onShortcuts: () => void }) { const m = messages[useUiStore((store) => store.locale)]; const [filter, setFilter] = useState(''); const commands = [{ label: m.goToday, icon: Sparkles, run: () => onNavigate('today') }, { label: m.goUpcoming, icon: CalendarDays, run: () => onNavigate('upcoming') }, { label: m.createTask, icon: Plus, run: onCreate }, { label: m.refreshTasks, icon: RefreshCw, run: onRefresh }, { label: m.toggleTheme, icon: Moon, run: onTheme }, { label: m.exportTasks, icon: Download, run: onExport }, { label: m.openSettings, icon: Settings, run: onSettings }, { label: m.keyboardShortcuts, icon: Keyboard, run: onShortcuts }].filter((item) => item.label.toLowerCase().includes(filter.toLowerCase())); return <Modal title={m.commandMenu} onClose={onClose} className="command-modal"><div className="global-search"><Search /><input autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={m.commandPlaceholder} /></div><div className="command-list">{commands.map(({ label, icon: Icon, run }) => <button key={label} onClick={() => { run(); if (![m.toggleTheme, m.exportTasks].includes(label)) onClose() }}><Icon /><span>{label}</span><ChevronRight /></button>)}</div></Modal> }
-function SettingsPanel({ theme, density, horizon, locale, onTheme, onDensity, onHorizon, onLocale, onRefresh, onExport, onClear, onDisconnect, onClose }: { theme: string; density: string; horizon: number; locale: AppLocale; onTheme: (theme: 'system' | 'light' | 'dark') => void; onDensity: (density: 'comfortable' | 'compact') => void; onHorizon: (horizon: 7 | 14 | 30) => void; onLocale: (locale: AppLocale) => void; onRefresh: () => void; onExport: () => void; onClear: () => void; onDisconnect: () => void; onClose: () => void }) { const m = messages[locale]; return <Modal title={m.settings} onClose={onClose} className="settings-modal"><div className="settings-content"><section><h3>{m.appearance}</h3><label>{m.language}<select value={locale} onChange={(event) => onLocale(event.target.value as AppLocale)}><option value="en">{m.english}</option><option value="hu">{m.hungarian}</option></select></label><label>{m.theme}<select aria-label={m.theme} value={theme} onChange={(event) => onTheme(event.target.value as 'system' | 'light' | 'dark')}><option value="system">{m.system}</option><option value="light">{m.light}</option><option value="dark">{m.dark}</option></select></label><label>{m.density}<select value={density} onChange={(event) => onDensity(event.target.value as 'comfortable' | 'compact')}><option value="comfortable">{m.comfortable}</option><option value="compact">{m.compact}</option></select></label></section><section><h3>{m.behavior}</h3><label>{m.upcomingHorizon}<select value={horizon} onChange={(event) => onHorizon(Number(event.target.value) as 7 | 14 | 30)}><option value="7">7 {m.days}</option><option value="14">14 {m.days}</option><option value="30">30 {m.days}</option></select></label></section><section><h3>{m.data}</h3><button onClick={onRefresh}><RefreshCw /> {m.refreshNow}</button><button onClick={onExport}><Download /> {m.exportTasks}</button><button onClick={onClear}><Trash2 /> {m.clearCache}</button>{!mockMode && <button className="danger-text" onClick={onDisconnect}><CloudOff /> {m.disconnect}</button>}</section><section><h3>{m.about}</h3><p>TaskStride 1.0.0 · MIT License</p><p>{m.privacy}</p></section></div></Modal> }
+function CommandPalette({ onClose, onNavigate, onCreate, onRefresh, onSettings, onTheme, onExport, onImport, onShortcuts }: { onClose: () => void; onNavigate: (view: SmartView) => void; onCreate: () => void; onRefresh: () => void; onSettings: () => void; onTheme: () => void; onExport: () => void; onImport: () => void; onShortcuts: () => void }) { const m = messages[useUiStore((store) => store.locale)]; const [filter, setFilter] = useState(''); const commands = [{ label: m.goToday, icon: Sparkles, run: () => onNavigate('today') }, { label: m.goUpcoming, icon: CalendarDays, run: () => onNavigate('upcoming') }, { label: m.createTask, icon: Plus, run: onCreate }, { label: m.refreshTasks, icon: RefreshCw, run: onRefresh }, { label: m.toggleTheme, icon: Moon, run: onTheme }, { label: m.exportTasks, icon: Download, run: onExport }, { label: m.importTasks, icon: Upload, run: onImport }, { label: m.openSettings, icon: Settings, run: onSettings }, { label: m.keyboardShortcuts, icon: Keyboard, run: onShortcuts }].filter((item) => item.label.toLowerCase().includes(filter.toLowerCase())); return <Modal title={m.commandMenu} onClose={onClose} className="command-modal"><div className="global-search"><Search /><input autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={m.commandPlaceholder} /></div><div className="command-list">{commands.map(({ label, icon: Icon, run }) => <button key={label} onClick={() => { run(); if (![m.toggleTheme, m.exportTasks].includes(label)) onClose() }}><Icon /><span>{label}</span><ChevronRight /></button>)}</div></Modal> }
+function SettingsPanel({ theme, density, horizon, locale, onTheme, onDensity, onHorizon, onLocale, onRefresh, onExport, onImport, onClear, onDisconnect, onClose }: { theme: string; density: string; horizon: number; locale: AppLocale; onTheme: (theme: 'system' | 'light' | 'dark') => void; onDensity: (density: 'comfortable' | 'compact') => void; onHorizon: (horizon: 7 | 14 | 30) => void; onLocale: (locale: AppLocale) => void; onRefresh: () => void; onExport: () => void; onImport: () => void; onClear: () => void; onDisconnect: () => void; onClose: () => void }) { const m = messages[locale]; return <Modal title={m.settings} onClose={onClose} className="settings-modal"><div className="settings-content"><section><h3>{m.appearance}</h3><label>{m.language}<select value={locale} onChange={(event) => onLocale(event.target.value as AppLocale)}><option value="en">{m.english}</option><option value="hu">{m.hungarian}</option></select></label><label>{m.theme}<select aria-label={m.theme} value={theme} onChange={(event) => onTheme(event.target.value as 'system' | 'light' | 'dark')}><option value="system">{m.system}</option><option value="light">{m.light}</option><option value="dark">{m.dark}</option></select></label><label>{m.density}<select value={density} onChange={(event) => onDensity(event.target.value as 'comfortable' | 'compact')}><option value="comfortable">{m.comfortable}</option><option value="compact">{m.compact}</option></select></label></section><section><h3>{m.behavior}</h3><label>{m.upcomingHorizon}<select value={horizon} onChange={(event) => onHorizon(Number(event.target.value) as 7 | 14 | 30)}><option value="7">7 {m.days}</option><option value="14">14 {m.days}</option><option value="30">30 {m.days}</option></select></label></section><section><h3>{m.data}</h3><button onClick={onRefresh}><RefreshCw /> {m.refreshNow}</button><button onClick={onExport}><Download /> {m.exportTasks}</button><button onClick={onImport}><Upload /> {m.importTasks}</button><button onClick={onClear}><Trash2 /> {m.clearCache}</button>{!mockMode && <button className="danger-text" onClick={onDisconnect}><CloudOff /> {m.disconnect}</button>}</section><section><h3>{m.about}</h3><p>TaskStride 1.0.0 · MIT License</p><p>{m.privacy}</p></section></div></Modal> }
 function Shortcuts({ onClose }: { onClose: () => void }) { const m = messages[useUiStore((store) => store.locale)]; const rows = [['N / Q', m.newTask], ['⌘ / Ctrl + K', m.commandMenu], ['/', m.search], ['Space', m.toggleSelected], ['Enter', m.openSelected], ['Esc', m.closePanel], ['?', m.keyboardShortcuts]]; return <Modal title={m.keyboardShortcuts} onClose={onClose}><div className="shortcut-list">{rows.map(([keys, label]) => <div key={keys}><kbd>{keys}</kbd><span>{label}</span></div>)}</div></Modal> }

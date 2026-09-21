@@ -9,11 +9,18 @@ export class GoogleApiError extends Error {
 }
 
 export class GoogleTasksRepository implements TaskRepository {
-  constructor(private readonly getToken: () => string | null, private readonly onExpired?: () => void) {}
+  /** `onUnauthorized` may renew the session; resolving true replays the request once. */
+  constructor(
+    private readonly getToken: () => string | null | Promise<string | null>,
+    private readonly onUnauthorized?: () => boolean | Promise<boolean>,
+  ) {}
 
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const token = this.getToken()
-    if (!token) throw new GoogleApiError(401, 'Reconnect Google to continue.')
+  private async request<T>(path: string, init?: RequestInit, allowRetry = true): Promise<T> {
+    const token = await this.getToken()
+    if (!token) {
+      if (allowRetry && await this.onUnauthorized?.()) return this.request<T>(path, init, false)
+      throw new GoogleApiError(401, 'Reconnect Google to continue.')
+    }
     let response: Response
     try {
       response = await fetch(`${API_ROOT}${path}`, {
@@ -27,7 +34,7 @@ export class GoogleTasksRepository implements TaskRepository {
       }
       throw error
     }
-    if (response.status === 401) this.onExpired?.()
+    if (response.status === 401 && allowRetry && await this.onUnauthorized?.()) return this.request<T>(path, init, false)
     if (!response.ok) {
       let details: unknown
       try { details = await response.json() } catch { details = await response.text() }
