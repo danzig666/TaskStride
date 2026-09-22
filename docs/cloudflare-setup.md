@@ -79,6 +79,31 @@ curl -si -X POST https://tasks.example.com/api/token -H 'x-taskstride-auth: 1' |
 Then open the app, press **Connect Google Tasks** once, and reload. The reload must not ask
 for Google again. Leaving it for a day and returning must not ask either.
 
+## Behind Cloudflare Access
+
+TaskStride works behind a Cloudflare Access application that covers the whole hostname,
+including `/api/*`. Two details make that reliable:
+
+* The service worker never answers navigations to `/cdn-cgi/` or `/api/`. Access completes every
+  sign-in with a navigation to `/cdn-cgi/access/authorized`, where it sets its cookie; a worker
+  that answered that request from its cache would lock the Access session out permanently.
+* When the Access session has expired, calls to `/api/token` are redirected to the Access
+  sign-in. The app recognises the redirect instead of mistaking it for a missing backend, and
+  renews the session with a real navigation through `/api/auth/return`. While the Access
+  identity session is still valid this round-trip is silent; otherwise Access asks for its own
+  sign-in first. The Google session is untouched either way.
+
+Recommended settings in **Zero Trust → Access → Applications →** the TaskStride application:
+
+* **Session duration**: a long value such as one month. Each expiry costs a redirect round-trip.
+* Keep `/api/*` covered by the same application. A bypass is not needed and would let anyone
+  reach the token endpoints.
+
+**Devices that used TaskStride before this fix** may still run the old service worker, which
+answered the Access callback from its cache. It cannot update itself while Access is expired,
+because the update request is redirected too. Clear the site's data once — or remove and re-add
+the installed app — and the new worker takes over.
+
 ## Operational notes
 
 * **Rotating `SESSION_SECRET` invalidates every session.** Existing cookies can no longer be
@@ -103,5 +128,11 @@ Google only returns a refresh token on a first grant. Remove TaskStride at
 The consent screen is still in *Testing*. Finish step 1.4.
 
 **Sessions still expire after an hour**
-The app is using the fallback flow. Check step 3 — most often `GOOGLE_CLIENT_SECRET` or
-`SESSION_SECRET` is missing from the environment that serves the deployment.
+The app is using the fallback flow. **Settings → Data → Google session** shows which flow is
+active. Check step 3 — most often `GOOGLE_CLIENT_SECRET` or `SESSION_SECRET` is missing from the
+environment that serves the deployment. Behind Cloudflare Access, also see the section above
+about devices that still run the old service worker.
+
+**"Site sign-in expired" banner**
+The Access session expired and the automatic renewal did not complete, for example because it
+ran moments ago. Press **Sign in again**.

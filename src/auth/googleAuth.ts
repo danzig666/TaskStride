@@ -1,5 +1,11 @@
 const TASKS_SCOPE = 'https://www.googleapis.com/auth/tasks'
 const SESSION_KEY = 'taskstride.google-auth'
+// Remembers that this deployment has an authorization backend, so a flaky network at start-up
+// is never mistaken for a static deployment and the app never drops to the one-hour flow.
+const BACKEND_KEY = 'taskstride.auth-backend'
+// Guards the automatic edge sign-in so a misconfigured edge cannot cause a redirect loop.
+const EDGE_RENEWAL_KEY = 'taskstride.edge-renewal-at'
+const EDGE_RENEWAL_COOLDOWN_MS = 2 * 60_000
 const AUTH_API = (import.meta.env.VITE_AUTH_API_BASE as string | undefined)?.replace(/\/$/, '') || '/api'
 // Google access tokens live an hour; refresh early so a request never races the expiry.
 const REFRESH_MARGIN_MS = 5 * 60_000
@@ -18,7 +24,12 @@ declare global { interface Window { google?: { accounts: { oauth2: GoogleOAuth }
 
 /** 'server' keeps the refresh token in an HttpOnly cookie; 'client' is the backend-free token flow. */
 export type AuthBackend = 'unknown' | 'server' | 'client'
-type ServerTokenOutcome = 'ok' | 'no-session' | 'unavailable' | 'upstream-error'
+/**
+ * - `edge-sign-in`: an edge gate such as Cloudflare Access redirected the request to its sign-in.
+ * - `network`: the request never completed; says nothing about whether a backend exists.
+ * - `unavailable`: definitively no backend (static host or unconfigured functions).
+ */
+type ServerTokenOutcome = 'ok' | 'no-session' | 'edge-sign-in' | 'network' | 'unavailable' | 'upstream-error'
 
 class GoogleAuthService extends EventTarget {
   private token: string | null = null
@@ -30,9 +41,10 @@ class GoogleAuthService extends EventTarget {
   private restored = false
   private booted = false
   private restoring?: Promise<void>
-  private refreshing?: Promise<boolean>
+  private refreshing?: Promise<ServerTokenOutcome>
   private refreshTimer?: ReturnType<typeof setTimeout>
-  private notified = { connected: false, ready: false }
+  private edgeSignInRequired = false
+  private notified = { connected: false, ready: false, edge: false }
 
   constructor() {
     super()
@@ -42,7 +54,7 @@ class GoogleAuthService extends EventTarget {
       this.restoreClientSession()
       this.restored = true
       this.booted = true
-      this.notified = { connected: this.connected, ready: true }
+      this.notified = { connected: this.connected, ready: true, edge: false }
       return
     }
     // With a client id the backend is probed first, so nothing is loaded from this tab yet:
@@ -50,6 +62,7 @@ class GoogleAuthService extends EventTarget {
     if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') void this.refreshIfStale() })
     }
+    if (typeof window !== 'undefined') window.addEventListener('online', () => { void this.refreshIfStale() })
   }
 
   get configured() { return Boolean(this.clientId) }
@@ -57,7 +70,12 @@ class GoogleAuthService extends EventTarget {
   /** False until the stored session has been probed, so the UI can avoid a sign-in flash. */
   get ready() { return this.booted }
   get accessToken() { return this.token && Date.now() < this.expiresAt ? this.token : null }
-  get connected() { return this.backendMode === 'server' ? this.serverSession : Boolean(this.accessToken) }
+  get connected() {
+    if (this.backendMode !== 'server') return Boolean(this.accessToken)
+    return this.serverSession && !this.edgeSignInRequired
+  }
+  /** True when an edge gate (e.g. Cloudflare Access) must be signed into again before the backend answers. */
+  get edgeSignInNeeded() { return this.edgeSignInRequired }
 
   /** Restores a session once per page load: a server cookie when available, otherwise this tab's token. */
   restore(): Promise<void> {
@@ -65,17 +83,26 @@ class GoogleAuthService extends EventTarget {
     if (this.restoring) return this.restoring
     this.restoring = (async () => {
       const outcome = await this.requestServerToken()
-      if (outcome === 'unavailable') {
-        this.backendMode = 'client'
-        this.restoreClientSession()
-      } else {
+      const knownServer = readStorage(localStorage, BACKEND_KEY) === 'server'
+      // A redirect to an edge sign-in proves the backend exists behind a gate; a network failure
+      // proves nothing, so it only keeps the backend when one has been seen here before.
+      const server = outcome === 'ok' || outcome === 'no-session' || outcome === 'upstream-error' || outcome === 'edge-sign-in' || (outcome === 'network' && knownServer)
+      if (server) {
         this.backendMode = 'server'
+        if (outcome === 'network') this.serverSession = true
         // A server session supersedes anything an earlier backend-free deployment stored.
         this.clearStoredSession()
+      } else {
+        this.backendMode = 'client'
+        if (outcome === 'unavailable') removeStorage(localStorage, BACKEND_KEY)
+        this.restoreClientSession()
       }
       this.restored = true
       this.booted = true
       this.notify()
+      // Arriving with an expired edge session is exactly what a full page load would have fixed
+      // before the service worker cached the app, so do that round-trip once, automatically.
+      if (outcome === 'edge-sign-in' && this.mayRenewEdgeAutomatically()) this.renewEdgeSignIn()
     })()
     return this.restoring
   }
@@ -99,6 +126,7 @@ class GoogleAuthService extends EventTarget {
   async connect(options: { switchAccount?: boolean } = {}): Promise<void> {
     if (!this.clientId) throw new Error('Add VITE_GOOGLE_CLIENT_ID to connect Google Tasks.')
     await this.restore()
+    if (this.edgeSignInRequired) return this.renewEdgeSignIn()
     await this.load()
     if (!window.google?.accounts?.oauth2) throw new Error('Could not load Google Identity Services.')
     if (this.backendMode === 'server') await this.connectWithCode(options)
@@ -112,7 +140,10 @@ class GoogleAuthService extends EventTarget {
     const current = this.accessToken
     if (current) return current
     if (this.backendMode !== 'server') return null
-    await this.refreshFromServer()
+    const outcome = await this.refreshFromServer()
+    if (outcome === 'network' || outcome === 'upstream-error') {
+      throw new Error('The session service could not be reached. Check the connection and try again.')
+    }
     return this.accessToken
   }
 
@@ -122,9 +153,25 @@ class GoogleAuthService extends EventTarget {
     if (this.backendMode !== 'server') { this.expire(); return false }
     this.token = null
     this.expiresAt = 0
-    if (await this.refreshFromServer()) return true
+    if (await this.refreshFromServer() === 'ok') return true
     this.notify()
     return false
+  }
+
+  /**
+   * Sends the tab through the edge gate with a real navigation. /api/ is excluded from the service
+   * worker, so the request reaches Cloudflare, which signs in and returns here with its cookie set.
+   */
+  renewEdgeSignIn() {
+    if (typeof window === 'undefined') return
+    writeStorage(sessionStorage, EDGE_RENEWAL_KEY, String(Date.now()))
+    const here = `${window.location.pathname}${window.location.search}`
+    browser.navigate(`${AUTH_API}/auth/return?to=${encodeURIComponent(here)}`)
+  }
+
+  private mayRenewEdgeAutomatically(): boolean {
+    const last = Number(readStorage(sessionStorage, EDGE_RENEWAL_KEY) ?? 0)
+    return !Number.isFinite(last) || Date.now() - last > EDGE_RENEWAL_COOLDOWN_MS
   }
 
   expire() {
@@ -137,7 +184,7 @@ class GoogleAuthService extends EventTarget {
 
   disconnect() {
     if (this.backendMode === 'server' && this.serverSession) {
-      void fetch(`${AUTH_API}/auth/logout`, { method: 'POST', credentials: 'same-origin', headers: { 'x-taskstride-auth': '1' } }).catch(() => undefined)
+      void fetch(`${AUTH_API}/auth/logout`, { method: 'POST', credentials: 'same-origin', redirect: 'manual', headers: { 'x-taskstride-auth': '1' } }).catch(() => undefined)
     } else if (this.token && window.google?.accounts?.oauth2) {
       window.google.accounts.oauth2.revoke(this.token, () => undefined)
     }
@@ -166,9 +213,15 @@ class GoogleAuthService extends EventTarget {
     const response = await fetch(`${AUTH_API}/auth/exchange`, {
       method: 'POST',
       credentials: 'same-origin',
+      redirect: 'manual',
       headers: { 'content-type': 'application/json', 'x-taskstride-auth': '1' },
       body: JSON.stringify({ code, origin: window.location.origin }),
     })
+    if (isEdgeRedirect(response)) {
+      this.edgeSignInRequired = true
+      this.notify()
+      throw new Error('The site sign-in has expired. Sign in to the site again, then connect Google.')
+    }
     const payload = await response.json().catch(() => null) as (TokenResponse & { description?: string }) | null
     if (response.status === 409 || payload?.error === 'no_refresh_token') {
       throw new Error('Google did not issue a long-lived session. Remove TaskStride under your Google account’s third-party access, then connect again.')
@@ -177,6 +230,7 @@ class GoogleAuthService extends EventTarget {
       throw new Error(payload?.description || payload?.error || 'The Google session could not be established.')
     }
     this.serverSession = true
+    writeStorage(localStorage, BACKEND_KEY, 'server')
     this.applyToken(payload.access_token, payload.expires_in)
   }
 
@@ -196,11 +250,11 @@ class GoogleAuthService extends EventTarget {
     })
   }
 
-  private refreshFromServer(): Promise<boolean> {
+  private refreshFromServer(): Promise<ServerTokenOutcome> {
     if (this.refreshing) return this.refreshing
     this.refreshing = (async () => {
       try {
-        return await this.requestServerToken() === 'ok'
+        return await this.requestServerToken()
       } finally {
         this.refreshing = undefined
       }
@@ -211,16 +265,24 @@ class GoogleAuthService extends EventTarget {
   private async requestServerToken(): Promise<ServerTokenOutcome> {
     let response: Response
     try {
-      response = await fetch(`${AUTH_API}/token`, { method: 'POST', credentials: 'same-origin', headers: { 'x-taskstride-auth': '1' } })
+      // `manual` keeps an edge redirect visible instead of following it into a CORS failure.
+      response = await fetch(`${AUTH_API}/token`, { method: 'POST', credentials: 'same-origin', redirect: 'manual', headers: { 'x-taskstride-auth': '1' } })
     } catch {
-      return 'unavailable'
+      return 'network'
     }
+    if (isEdgeRedirect(response)) {
+      if (!this.edgeSignInRequired) { this.edgeSignInRequired = true; this.notify() }
+      return 'edge-sign-in'
+    }
+    const json = response.headers.get('content-type')?.includes('application/json')
     // A static deployment answers /api/token with the SPA shell or a 404 instead of JSON.
-    if (!response.headers.get('content-type')?.includes('application/json')) return 'unavailable'
+    if (!json) return response.status >= 500 ? 'upstream-error' : 'unavailable'
     const payload = await response.json().catch(() => null) as (TokenResponse & { description?: string }) | null
-    if (!payload) return 'unavailable'
+    if (!payload) return 'upstream-error'
     if (payload.error === 'not_configured') return 'unavailable'
 
+    writeStorage(localStorage, BACKEND_KEY, 'server')
+    if (this.edgeSignInRequired) { this.edgeSignInRequired = false; this.notify() }
     if (response.ok && payload.access_token) {
       this.serverSession = true
       this.applyToken(payload.access_token, payload.expires_in)
@@ -294,11 +356,32 @@ class GoogleAuthService extends EventTarget {
   private notify() {
     // Nothing is announced during boot: restore() emits one event for the settled state.
     if (!this.booted) return
-    const snapshot = { connected: this.connected, ready: this.booted }
-    if (snapshot.connected === this.notified.connected && snapshot.ready === this.notified.ready) return
+    const snapshot = { connected: this.connected, ready: this.booted, edge: this.edgeSignInRequired }
+    if (snapshot.connected === this.notified.connected && snapshot.ready === this.notified.ready && snapshot.edge === this.notified.edge) return
     this.notified = snapshot
     this.dispatchEvent(new Event('change'))
   }
+}
+
+/** Page navigation, separated so tests can observe it; jsdom cannot navigate. */
+export const browser = { navigate: (url: string) => window.location.assign(url) }
+
+/** A redirect answered with `redirect: 'manual'`, or a gate's HTML refusal, means an edge sign-in. */
+function isEdgeRedirect(response: Response): boolean {
+  if (response.type === 'opaqueredirect') return true
+  if (response.status >= 300 && response.status < 400) return true
+  const json = response.headers.get('content-type')?.includes('application/json')
+  return !json && (response.status === 401 || response.status === 403)
+}
+
+function readStorage(storage: Storage | undefined, key: string): string | null {
+  try { return storage?.getItem(key) ?? null } catch { return null }
+}
+function writeStorage(storage: Storage | undefined, key: string, value: string) {
+  try { storage?.setItem(key, value) } catch { /* private mode */ }
+}
+function removeStorage(storage: Storage | undefined, key: string) {
+  try { storage?.removeItem(key) } catch { /* private mode */ }
 }
 
 export const googleAuth = new GoogleAuthService()

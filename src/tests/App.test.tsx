@@ -7,10 +7,20 @@ import { useUiStore } from '../store/uiStore'
 
 vi.mock('../db/cache', () => ({ cacheSnapshot: vi.fn(), clearCache: vi.fn(), readSnapshot: vi.fn(async () => ({ lists: [], tasks: [] })), syncCacheVersion: '2' }))
 
+// The demo repository is a module singleton, so each test gets its own copy of the seed data;
+// otherwise a task renamed or deleted in one test changes what the next one sees.
+const repositoryState = vi.hoisted(() => ({ current: undefined as unknown as object }))
+vi.mock('../api/repository', async () => {
+  const { MockTasksRepository } = await import('../api/mockTasks')
+  repositoryState.current = new MockTasksRepository()
+  const forward = { get: (_target: object, key: string | symbol) => { const value: unknown = Reflect.get(repositoryState.current, key); return typeof value === 'function' ? value.bind(repositoryState.current) : value } }
+  return { mockMode: true, repository: new Proxy({}, forward) }
+})
+
 const renderApp = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App /></QueryClientProvider>)
 
 describe('TaskStride UI', () => {
-  beforeEach(() => { localStorage.clear(); window.history.replaceState(null, '', '/'); useUiStore.setState({ activeView: 'all', selectedTaskId: undefined, theme: 'system', density: 'comfortable', horizon: 7, favoriteLists: [], locale: 'en' }) })
+  beforeEach(async () => { const { MockTasksRepository } = await import('../api/mockTasks'); repositoryState.current = new MockTasksRepository(); localStorage.clear(); window.history.replaceState(null, '', '/'); useUiStore.setState({ activeView: 'all', selectedTaskId: undefined, theme: 'system', density: 'comfortable', horizon: 7, favoriteLists: [], locale: 'en' }) })
   afterEach(() => vi.restoreAllMocks())
   it('shows live progress while tasks are synchronizing', async () => { renderApp(); expect(await screen.findByRole('status', { name: 'Syncing…' })).toBeInTheDocument(); expect(await screen.findByRole('heading', { name: /^All tasks \(\d+\)$/ })).toBeInTheDocument() })
   it('opens on All tasks and keeps it first in navigation', async () => { renderApp(); expect(await screen.findByRole('heading', { name: /^All tasks \(\d+\)$/ })).toBeInTheDocument(); const buttons = screen.getByRole('navigation', { name: 'Smart views' }).querySelectorAll('button'); expect(buttons[0]).toHaveTextContent('All tasks') })
@@ -64,6 +74,55 @@ describe('TaskStride UI', () => {
     expect(await screen.findByText('Restored from backup')).toBeInTheDocument()
     expect(screen.getAllByText('Review Q4 product brief')).toHaveLength(1)
     expect(screen.getAllByText('Research weekend train routes')).toHaveLength(1)
+  })
+
+  it('completes, renames and deletes subtasks from the parent task', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByText('Review Q4 product brief'))
+
+    await user.click(screen.getByRole('button', { name: 'Complete Collect launch questions' }))
+    expect(await screen.findByRole('button', { name: 'Mark incomplete Collect launch questions' })).toBeInTheDocument()
+
+    const title = screen.getByRole('textbox', { name: 'Edit subtask: Collect launch questions' })
+    await user.clear(title)
+    await user.type(title, 'Collect launch blockers{Enter}')
+    expect(await screen.findByRole('textbox', { name: 'Edit subtask: Collect launch blockers' })).toHaveValue('Collect launch blockers')
+
+    await user.click(screen.getByRole('button', { name: 'Delete subtask: Check onboarding metrics' }))
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Edit subtask: Check onboarding metrics' })).not.toBeInTheDocument())
+    // The parent's panel stays open throughout.
+    expect(screen.getByRole('textbox', { name: 'Task details' })).toHaveValue('Review Q4 product brief')
+  })
+
+  it('adds a subtask without reloading or closing the panel', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByText('Review Q4 product brief'))
+
+    await user.type(screen.getByPlaceholderText('Add subtask'), 'Draft rollout plan{Enter}')
+
+    expect(await screen.findByRole('textbox', { name: 'Edit subtask: Draft rollout plan' })).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Task details' })).toHaveValue('Review Q4 product brief')
+  })
+
+  it('opens a subtask and returns to its parent', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByText('Review Q4 product brief'))
+
+    await user.click(screen.getByRole('button', { name: 'Open subtask: Collect launch questions' }))
+    expect(screen.getByRole('textbox', { name: 'Task details' })).toHaveValue('Collect launch questions')
+
+    await user.click(screen.getByRole('button', { name: 'Review Q4 product brief' }))
+    expect(screen.getByRole('textbox', { name: 'Task details' })).toHaveValue('Review Q4 product brief')
+  })
+
+  it('shows which kind of Google session is active', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(screen.getByText('Google session').closest('.session-status')).toHaveTextContent('Demo data')
   })
 
   it('switches the complete interface to Hungarian', async () => { const user = userEvent.setup(); renderApp(); await user.click(await screen.findByRole('button', { name: 'Settings' })); await user.selectOptions(screen.getByLabelText('Language'), 'hu'); expect(await screen.findByRole('heading', { name: /^Összes feladat \(\d+\)$/ })).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Beállítások' })).toBeInTheDocument() })

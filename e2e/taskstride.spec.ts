@@ -109,3 +109,32 @@ test('imports only the tasks that are missing', async ({ page }) => {
   await expect(page.getByText('1 imported · 1 already existed')).toBeVisible()
   await expect(page.getByRole('region', { name: 'Tasks' }).locator('article strong', { hasText: 'Review Q4 product brief' })).toHaveCount(1)
 })
+
+test('lets the edge sign-in and the auth backend see navigations the worker would otherwise answer', async ({ page }) => {
+  await page.goto('/')
+  await page.evaluate(async () => { await navigator.serviceWorker.ready })
+  await page.reload()
+  expect(await page.evaluate(() => Boolean(navigator.serviceWorker.controller))).toBe(true)
+
+  // Cloudflare Access sets its cookie on /cdn-cgi/access/authorized; the worker must not answer it.
+  for (const path of ['/cdn-cgi/access/authorized?token=abc', '/api/auth/return?to=%2F']) {
+    const response = await page.goto(path)
+    expect(response?.fromServiceWorker(), path).toBe(false)
+  }
+  // Ordinary deep links are still served from the cached shell, so the app keeps working offline.
+  const deepLink = await page.goto('/any/view')
+  expect(deepLink?.fromServiceWorker()).toBe(true)
+})
+
+test('completes and edits a subtask from its parent', async ({ page }) => {
+  await page.goto('/')
+  await page.getByRole('region', { name: 'Tasks' }).getByText('Review Q4 product brief').click()
+
+  await page.getByRole('button', { name: 'Complete Collect launch questions' }).click()
+  await expect(page.getByRole('button', { name: 'Mark incomplete Collect launch questions' })).toBeVisible()
+
+  const title = page.getByRole('textbox', { name: 'Edit subtask: Collect launch questions' })
+  await title.fill('Collect launch blockers')
+  await title.press('Enter')
+  await expect(page.getByRole('textbox', { name: 'Edit subtask: Collect launch blockers' })).toHaveValue('Collect launch blockers')
+})

@@ -28,7 +28,11 @@ export default defineConfig(({ mode }) => {
         },
         workbox: {
           globPatterns: ['**/*.{js,css,html,svg,woff2}'],
-          navigateFallback: 'index.html'
+          navigateFallback: 'index.html',
+          // These navigations must reach the network: /cdn-cgi/ is where Cloudflare Access sets
+          // its session cookie after a sign-in, and /api/ serves the authorization backend.
+          // Answering them with the cached app shell would lock the edge session out for good.
+          navigateFallbackDenylist: [/^\/api\//, /^\/cdn-cgi\//]
         }
       })
     ]

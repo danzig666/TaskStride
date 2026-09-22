@@ -10,6 +10,9 @@ const en = {
   welcomeLead: 'Your Google Tasks, with a better workspace.', welcomePrivacy: 'Your tasks remain in Google Tasks. TaskStride doesn’t require its own task database.', connectGoogle: 'Connect Google Tasks', howItWorks: 'How it works',
   taskCompleted: 'Task completed', taskReopened: 'Task reopened', undo: 'Undo', taskDeleted: 'Task deleted', refreshed: 'Tasks refreshed', exported: 'Export downloaded', cacheCleared: 'Local cache cleared', backOnline: 'Back online', couldNotSave: 'Couldn’t save task', reorderHint: 'Drop onto a list in the sidebar to move a task between lists.', addList: 'Add list', smartViews: 'Smart views', taskLists: 'Task lists', reorder: 'Reorder', complete: 'Complete', markIncomplete: 'Mark incomplete', taskActions: 'Task actions', close: 'Close', mobileNavigation: 'Mobile navigation',
   importTasks: 'Import tasks', importing: 'Importing tasks… {done}/{total}', importDone: '{created} imported · {skipped} already existed', importFailed: '{failed} could not be created', importNothing: 'Every task in this file already exists.', importInvalid: 'This file is not a TaskStride export.', importOffline: 'Reconnect Google to import tasks.', addTaskMobile: 'Show the task composer', hideComposer: 'Hide the task composer',
+  edgeSignInRequired: 'Site sign-in expired', edgeSignInDetail: 'The site sign-in has expired, so tasks cannot sync.', edgeSignInAction: 'Sign in again',
+  sessionStatus: 'Google session', sessionServer: 'Kept on the server — no hourly sign-in', sessionClient: 'This tab only — expires within an hour', sessionSignedOut: 'Not connected', sessionDemo: 'Demo data',
+  editSubtask: 'Edit subtask', deleteSubtask: 'Delete subtask', openSubtask: 'Open subtask', subtaskDeleted: 'Subtask deleted',
 }
 
 const hu: Record<keyof typeof en, string> = {
@@ -22,6 +25,9 @@ const hu: Record<keyof typeof en, string> = {
   welcomeLead: 'Google-feladataid egy jobb munkatérben.', welcomePrivacy: 'A feladataid a Google Tasksban maradnak. A TaskStride nem igényel saját feladat-adatbázist.', connectGoogle: 'Google Tasks csatlakoztatása', howItWorks: 'Hogyan működik?',
   taskCompleted: 'Feladat elvégezve', taskReopened: 'Feladat újranyitva', undo: 'Visszavonás', taskDeleted: 'Feladat törölve', refreshed: 'Feladatok frissítve', exported: 'Export letöltve', cacheCleared: 'Helyi gyorsítótár törölve', backOnline: 'Újra online', couldNotSave: 'A feladat mentése sikertelen', reorderHint: 'Másik listába helyezéshez húzd a feladatot az oldalsáv megfelelő listájára.', addList: 'Lista hozzáadása', smartViews: 'Intelligens nézetek', taskLists: 'Feladatlisták', reorder: 'Átrendezés', complete: 'Elvégzés', markIncomplete: 'Visszaállítás elvégzetlenre', taskActions: 'Feladatműveletek', close: 'Bezárás', mobileNavigation: 'Mobil navigáció',
   importTasks: 'Feladatok importálása', importing: 'Importálás… {done}/{total}', importDone: '{created} importálva · {skipped} már megvolt', importFailed: '{failed} nem jött létre', importNothing: 'A fájlban minden feladat már megvan.', importInvalid: 'Ez a fájl nem TaskStride-export.', importOffline: 'Az importáláshoz csatlakozz újra a Google-hoz.', addTaskMobile: 'Feladatbeviteli sáv megjelenítése', hideComposer: 'Feladatbeviteli sáv elrejtése',
+  edgeSignInRequired: 'A webhely-bejelentkezés lejárt', edgeSignInDetail: 'A webhelyre való bejelentkezés lejárt, ezért a feladatok nem szinkronizálódnak.', edgeSignInAction: 'Újra bejelentkezés',
+  sessionStatus: 'Google-munkamenet', sessionServer: 'Szerveren tárolva — nincs óránkénti bejelentkezés', sessionClient: 'Csak ez a fül — egy órán belül lejár', sessionSignedOut: 'Nincs csatlakoztatva', sessionDemo: 'Bemutató adatok',
+  editSubtask: 'Részfeladat szerkesztése', deleteSubtask: 'Részfeladat törlése', openSubtask: 'Részfeladat megnyitása', subtaskDeleted: 'Részfeladat törölve',
 }
 
 export const messages = { en, hu }

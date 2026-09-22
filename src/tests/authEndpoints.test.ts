@@ -136,3 +136,23 @@ describe('POST /api/auth/logout', () => {
     expect(response.headers.get('set-cookie')).toContain('Max-Age=0')
   })
 })
+
+describe('GET /api/auth/return', () => {
+  it('sends the browser back to the page it came from', async () => {
+    const { onRequestGet } = await import('../../functions/api/auth/return')
+    const response = onRequestGet({ request: new Request('https://tasks.example.com/api/auth/return?to=%2F%3Fview%3Dtoday') })
+    expect(response.status).toBe(302)
+    expect(response.headers.get('location')).toBe('/?view=today')
+    expect(response.headers.get('cache-control')).toBe('no-store')
+  })
+
+  it('never redirects off-site or back into itself', async () => {
+    const { safeReturnPath } = await import('../../functions/api/auth/return')
+    expect(safeReturnPath('https://evil.example')).toBe('/')
+    expect(safeReturnPath('//evil.example/path')).toBe('/')
+    expect(safeReturnPath('/\\evil.example')).toBe('/')
+    expect(safeReturnPath('/api/auth/return?to=/')).toBe('/')
+    expect(safeReturnPath('/cdn-cgi/access/logout')).toBe('/')
+    expect(safeReturnPath('/tasks/today')).toBe('/tasks/today')
+  })
+})

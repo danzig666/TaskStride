@@ -138,7 +138,8 @@ Build with `npm run build`, publish `dist/`, and Pages deploys `functions/` alon
 `public/_headers` carries the Content-Security-Policy and cache headers, and
 `public/_routes.json` keeps the worker off the static asset paths. Configuring the three
 backend variables enables long-lived sessions; leaving them out keeps the deployment static.
-Full walkthrough: [docs/cloudflare-setup.md](docs/cloudflare-setup.md).
+Full walkthrough, including running behind Cloudflare Access:
+[docs/cloudflare-setup.md](docs/cloudflare-setup.md).
 
 ### nginx
 
