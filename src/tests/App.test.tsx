@@ -1,5 +1,5 @@
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import App from '../App'
@@ -17,6 +17,12 @@ vi.mock('../api/repository', async () => {
   return { mockMode: true, repository: new Proxy({}, forward) }
 })
 
+// A phone matches every max-width breakpoint the app asks about.
+const mockPhone = () => vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ matches: /max-width: (767|1279)px/.test(query), media: query, onchange: null, addListener: () => undefined, removeListener: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => false }))
+// On a tablet the details panel is a side sheet, so the rest of the app stays reachable.
+const mockTablet = () => vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ matches: query === '(max-width: 1279px)', media: query, onchange: null, addListener: () => undefined, removeListener: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => false }))
+const overlayEntryIsCurrent = () => Boolean((window.history.state as { taskstrideOverlay?: boolean } | null)?.taskstrideOverlay)
+
 const renderApp = () => render(<QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}><App /></QueryClientProvider>)
 
 describe('TaskStride UI', () => {
@@ -26,7 +32,7 @@ describe('TaskStride UI', () => {
   it('opens on All tasks and keeps it first in navigation', async () => { renderApp(); expect(await screen.findByRole('heading', { name: /^All tasks \(\d+\)$/ })).toBeInTheDocument(); const buttons = screen.getByRole('navigation', { name: 'Smart views' }).querySelectorAll('button'); expect(buttons[0]).toHaveTextContent('All tasks') })
   it('quick-adds a task without opening its details', async () => { const user = userEvent.setup(); renderApp(); const input = await screen.findByRole('textbox', { name: 'Add a task' }); await waitFor(() => expect(input).toBeEnabled()); await user.type(input, 'Plan next week{Enter}'); expect(await screen.findByText('Plan next week')).toBeInTheDocument(); expect(screen.queryByRole('textbox', { name: 'Task details' })).not.toBeInTheDocument() })
   it('opens task details', async () => { const user = userEvent.setup(); renderApp(); await user.click(await screen.findByText('Review Q4 product brief')); expect(screen.getByText('Task details')).toBeInTheDocument(); expect(screen.getByRole('textbox', { name: 'Task details' })).toHaveValue('Review Q4 product brief') })
-  it('uses mobile browser history to close task details on Back', async () => { vi.spyOn(window, 'matchMedia').mockImplementation((query) => ({ matches: query === '(max-width: 767px)', media: query, onchange: null, addListener: () => undefined, removeListener: () => undefined, addEventListener: () => undefined, removeEventListener: () => undefined, dispatchEvent: () => false })); const pushState = vi.spyOn(window.history, 'pushState'); const user = userEvent.setup(); renderApp(); await user.click(await screen.findByText('Review Q4 product brief')); expect(pushState).toHaveBeenCalled(); expect(screen.getByText('Task details')).toBeInTheDocument(); window.dispatchEvent(new PopStateEvent('popstate', { state: null })); await waitFor(() => expect(screen.queryByText('Task details')).not.toBeInTheDocument()) })
+  it('uses mobile browser history to close task details on Back', async () => { mockPhone(); const pushState = vi.spyOn(window.history, 'pushState'); const user = userEvent.setup(); renderApp(); await user.click(await screen.findByText('Review Q4 product brief')); expect(pushState).toHaveBeenCalled(); expect(screen.getByText('Task details')).toBeInTheDocument(); window.dispatchEvent(new PopStateEvent('popstate', { state: null })); await waitFor(() => expect(screen.queryByText('Task details')).not.toBeInTheDocument()) })
   it('shows attached Gmail and generic links in task details', async () => { const user = userEvent.setup(); renderApp(); await user.click(await screen.findByText('Review Q4 product brief')); const gmailLink = screen.getAllByRole('link', { name: /Product brief discussion/ }).find((item) => item.closest('.links-block')); expect(gmailLink).toHaveAttribute('href', 'https://mail.google.com/mail/#all/example'); expect(gmailLink).toHaveTextContent('Gmail'); expect(screen.getByRole('link', { name: /Product specification/ })).toHaveAttribute('href', 'https://example.com/specification') })
   it('shows the Google updated timestamp in task rows', async () => { renderApp(); const title = await screen.findByText('Review Q4 product brief'); expect(title.closest('article')).toHaveTextContent('Updated') })
   it('shows a clickable email icon and link text in the task row', async () => { renderApp(); const title = await screen.findByText('Review Q4 product brief'); const link = title.closest('article')?.querySelector<HTMLAnchorElement>('.task-email-link'); expect(link).toHaveAttribute('href', 'https://mail.google.com/mail/#all/example'); expect(link).toHaveAttribute('target', '_blank'); expect(link).toHaveTextContent('Product brief discussion') })
@@ -123,6 +129,100 @@ describe('TaskStride UI', () => {
     renderApp()
     await user.click(await screen.findByRole('button', { name: 'Settings' }))
     expect(screen.getByText('Google session').closest('.session-status')).toHaveTextContent('Demo data')
+  })
+
+  it('closes settings with Back instead of leaving the app', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument()
+    await waitFor(() => expect(overlayEntryIsCurrent()).toBe(true))
+
+    window.history.back()
+
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Settings' })).not.toBeInTheDocument())
+    expect(overlayEntryIsCurrent()).toBe(false)
+  })
+
+  it('closes the command menu and search with Back as well', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await screen.findByText('Review Q4 product brief')
+
+    await user.keyboard('{Control>}k{/Control}')
+    expect(screen.getByRole('dialog', { name: 'Command menu' })).toBeInTheDocument()
+    await waitFor(() => expect(overlayEntryIsCurrent()).toBe(true))
+    window.history.back()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Command menu' })).not.toBeInTheDocument())
+
+    await user.keyboard('/')
+    expect(screen.getByRole('dialog', { name: 'Search tasks' })).toBeInTheDocument()
+    await waitFor(() => expect(overlayEntryIsCurrent()).toBe(true))
+    window.history.back()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Search tasks' })).not.toBeInTheDocument())
+  })
+
+  it('closes the topmost layer first when several are open', async () => {
+    mockTablet()
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByText('Review Q4 product brief'))
+    await user.keyboard('/')
+    expect(screen.getByRole('dialog', { name: 'Search tasks' })).toBeInTheDocument()
+    await waitFor(() => expect(overlayEntryIsCurrent()).toBe(true))
+
+    window.history.back()
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: 'Search tasks' })).not.toBeInTheDocument())
+    expect(screen.getByRole('textbox', { name: 'Task details' })).toBeInTheDocument()
+    // The details panel is still open, so Back must still have something to close.
+    await waitFor(() => expect(overlayEntryIsCurrent()).toBe(true))
+
+    window.history.back()
+    await waitFor(() => expect(screen.queryByRole('textbox', { name: 'Task details' })).not.toBeInTheDocument())
+  })
+
+  it('closes the navigation menu when settings open from it', async () => {
+    mockPhone()
+    const user = userEvent.setup()
+    const { container } = renderApp()
+    await screen.findByText('Review Q4 product brief')
+    await user.click(screen.getByRole('button', { name: 'Open navigation' }))
+    expect(container.querySelector('.sidebar-open')).not.toBeNull()
+
+    await user.click(screen.getByRole('button', { name: 'Settings' }))
+
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toBeInTheDocument()
+    expect(container.querySelector('.sidebar-open')).toBeNull()
+  })
+
+  it('removes the Back step when a layer is closed from the interface', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByRole('button', { name: 'Settings' }))
+    await waitFor(() => expect(overlayEntryIsCurrent()).toBe(true))
+
+    await user.click(within(screen.getByRole('dialog', { name: 'Settings' })).getByRole('button', { name: 'Close' }))
+
+    await waitFor(() => expect(overlayEntryIsCurrent()).toBe(false))
+  })
+
+  it('searches without filtering the list behind the search dialog', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await screen.findByText('Review Q4 product brief')
+    await user.keyboard('/')
+    await user.type(screen.getByPlaceholderText('Search title, notes, or list…'), 'dentist')
+    await user.click(within(screen.getByRole('dialog', { name: 'Search tasks' })).getByRole('button', { name: 'Close' }))
+
+    expect(screen.getByText('Review Q4 product brief')).toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: 'Filter tasks…' })).toHaveValue('')
+  })
+
+  it('shows the version it was built as', async () => {
+    const user = userEvent.setup()
+    renderApp()
+    await user.click(await screen.findByRole('button', { name: 'Settings' }))
+    expect(screen.getByRole('dialog', { name: 'Settings' })).toHaveTextContent(/TaskStride 1\.1\.0/)
   })
 
   it('switches the complete interface to Hungarian', async () => { const user = userEvent.setup(); renderApp(); await user.click(await screen.findByRole('button', { name: 'Settings' })); await user.selectOptions(screen.getByLabelText('Language'), 'hu'); expect(await screen.findByRole('heading', { name: /^Összes feladat \(\d+\)$/ })).toBeInTheDocument(); expect(screen.getByRole('button', { name: 'Beállítások' })).toBeInTheDocument() })

@@ -19,6 +19,7 @@ import { messages, type AppLocale } from './i18n'
 import { canMoveAcrossLists, inSmartView, reconcileTasks, searchTasks, sortByGoogleOrder, sortByPosition, type SmartView } from './lib/tasks'
 import { parseImportFile, planImport } from './lib/importTasks'
 import { dedupeTasks, incrementalSince, needsFullSync } from './lib/sync'
+import { useBackClosesLayers } from './lib/backNavigation'
 import { useUiStore } from './store/uiStore'
 import type { GoogleTask, GoogleTaskList, TaskPatch, TaskWithList } from './types/googleTasks'
 
@@ -85,6 +86,7 @@ export default function App() {
   const m = messages[locale]
   const [, setAuthVersion] = useState(0)
   const [query, setQuery] = useState('')
+  const [searchQuery, setSearchQuery] = useState('')
   const [quickTitle, setQuickTitle] = useState('')
   const [quickDate, setQuickDate] = useState('')
   const [mobileMenu, setMobileMenu] = useState(false)
@@ -173,20 +175,30 @@ export default function App() {
     if (!input || document.activeElement?.closest('.quick-add')) return
     input.focus()
   }, [composerOpen, composerReady])
-  const openTaskDetails = useCallback((taskId: string) => {
-    if (window.matchMedia('(max-width: 767px)').matches && !selectedTaskId) window.history.pushState({ ...(window.history.state ?? {}), taskstrideDetail: taskId }, '')
-    selectTask(taskId)
-  }, [selectTask, selectedTaskId])
-  const closeTaskDetails = useCallback(() => {
-    if (window.history.state?.taskstrideDetail) window.history.back()
-    else selectTask(undefined)
-  }, [selectTask])
+  const openTaskDetails = selectTask
+  const closeTaskDetails = useCallback(() => selectTask(undefined), [selectTask])
 
   useEffect(() => { if (taskListViewport.current) taskListViewport.current.scrollTop = 0 }, [activeView, query])
-  useEffect(() => {
-    const onPopState = (event: PopStateEvent) => selectTask(typeof event.state?.taskstrideDetail === 'string' ? event.state.taskstrideDetail : undefined)
-    window.addEventListener('popstate', onPopState); return () => window.removeEventListener('popstate', onPopState)
+
+  // Everything that opens on top of the list is a layer that Back closes, topmost first. The
+  // details panel and the composer only count where they cover the list: the details panel below
+  // the three-column width, the composer on phones.
+  const layers = ([
+    shortcutsOpen && 'shortcuts', commandOpen && 'command', searchOpen && 'search', settingsOpen && 'settings',
+    mobileMenu && 'menu',
+    selectedTask && window.matchMedia('(max-width: 1279px)').matches && 'details',
+    composerOpen && window.matchMedia('(max-width: 767px)').matches && 'composer',
+  ] as const).filter((layer): layer is Exclude<typeof layer, false | undefined> => Boolean(layer))
+  const closeLayer = useCallback((layer: (typeof layers)[number]) => {
+    if (layer === 'shortcuts') setShortcutsOpen(false)
+    else if (layer === 'command') setCommandOpen(false)
+    else if (layer === 'search') { setSearchOpen(false); setSearchQuery('') }
+    else if (layer === 'settings') setSettingsOpen(false)
+    else if (layer === 'menu') setMobileMenu(false)
+    else if (layer === 'details') selectTask(undefined)
+    else setComposerOpen(false)
   }, [selectTask])
+  useBackClosesLayers(layers, closeLayer)
 
   const optimisticMutation = useMutation({
     mutationFn: async ({ task, patch }: { task: TaskWithList; patch: TaskPatch }) => repository.patchTask(task.taskListId, task.id, patch),
@@ -339,7 +351,7 @@ export default function App() {
       <nav className="primary-nav" aria-label={m.smartViews}>{navViews.map(([key, { icon: Icon, labelKey }]) => <button className={activeView === key ? 'active' : ''} key={key} onClick={() => { setActiveView(key); setMobileMenu(false) }}><Icon /><span>{m[labelKey]}</span><em>{data.tasks.filter((task) => inSmartView(task, key, horizon)).length}</em></button>)}</nav>
       <div className="section-title"><span>{m.myLists}</span><button aria-label={m.addList} onClick={async () => { const title = window.prompt(locale === 'hu' ? 'Lista neve' : 'List name'); if (!title?.trim()) return; await repository.createTaskList(title.trim()); await refresh() }}><Plus /></button></div>
       <nav className="list-nav" aria-label={m.taskLists}>{data.lists.map((list, index) => <button key={list.id} className={activeView === list.id ? 'active' : ''} onClick={() => { setActiveView(list.id); setMobileMenu(false) }}><i className={`dot ${accents[index % accents.length]}`} /><span>{list.title}</span><em>{data.tasks.filter((task) => task.taskListId === list.id && task.status !== 'completed').length}</em></button>)}</nav>
-      <button className="settings-link" onClick={() => setSettingsOpen(true)}><Settings /><span>{m.settings}</span></button>
+      <button className="settings-link" onClick={() => { setSettingsOpen(true); setMobileMenu(false) }}><Settings /><span>{m.settings}</span></button>
     </aside>
 
     <main className="workspace">
@@ -367,7 +379,7 @@ export default function App() {
     {mobileMenu && <button className="scrim" onClick={() => setMobileMenu(false)} aria-label="Close navigation" />}
     <button className="command-hint" onClick={() => setCommandOpen(true)}><Command />K</button>
 
-    {searchOpen && <Modal title={m.searchTasks} onClose={() => setSearchOpen(false)} className="search-modal"><div className="global-search"><Search /><input data-global-search value={query} onChange={(event) => setQuery(event.target.value)} placeholder={m.searchPlaceholder} /></div><div className="search-results">{searchTasks(data.tasks, query).slice(0, 12).map((task) => <button key={task.id} onClick={() => { openTaskDetails(task.id); setSearchOpen(false) }}><span className="mini-check">{task.status === 'completed' && <Check />}</span><span><strong>{task.title}</strong><small>{task.taskListTitle}{task.due ? ` · ${formatDue(task.due, new Date(), locale === 'hu' ? huLocale : enUS)}` : ''}</small></span><ChevronRight /></button>)}</div></Modal>}
+    {searchOpen && <Modal title={m.searchTasks} onClose={() => closeLayer('search')} className="search-modal"><div className="global-search"><Search /><input data-global-search value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder={m.searchPlaceholder} /></div><div className="search-results">{searchTasks(data.tasks, searchQuery).slice(0, 12).map((task) => <button key={task.id} onClick={() => { openTaskDetails(task.id); closeLayer('search') }}><span className="mini-check">{task.status === 'completed' && <Check />}</span><span><strong>{task.title}</strong><small>{task.taskListTitle}{task.due ? ` · ${formatDue(task.due, new Date(), locale === 'hu' ? huLocale : enUS)}` : ''}</small></span><ChevronRight /></button>)}</div></Modal>}
     {commandOpen && <CommandPalette onClose={() => setCommandOpen(false)} onNavigate={(view) => { setActiveView(view); setCommandOpen(false) }} onCreate={() => { setCommandOpen(false); focusComposer() }} onRefresh={() => { setCommandOpen(false); void refresh() }} onSettings={() => { setCommandOpen(false); setSettingsOpen(true) }} onTheme={() => setTheme(theme === 'dark' ? 'light' : 'dark')} onExport={exportTasks} onImport={() => { setCommandOpen(false); importInput.current?.click() }} onShortcuts={() => { setCommandOpen(false); setShortcutsOpen(true) }} />}
     {settingsOpen && <SettingsPanel sessionLabel={mockMode ? m.sessionDemo : edgeSignIn ? m.edgeSignInRequired : !connected ? m.sessionSignedOut : googleAuth.backend === 'server' ? m.sessionServer : m.sessionClient} theme={theme} density={density} horizon={horizon} locale={locale} onLocale={setLocale} onTheme={setTheme} onDensity={setDensity} onHorizon={setHorizon} onRefresh={refresh} onExport={exportTasks} onImport={() => importInput.current?.click()} onClear={async () => { await clearCache(); toast.success(m.cacheCleared) }} onDisconnect={async () => { googleAuth.disconnect(); await clearCache(); queryClient.clear(); setSettingsOpen(false) }} onClose={() => setSettingsOpen(false)} />}
     {shortcutsOpen && <Shortcuts onClose={() => setShortcutsOpen(false)} />}
@@ -458,5 +470,5 @@ function SubtaskRow({ task, onToggle, onRename, onDelete, onOpen }: { task: Task
 function EmptyState({ view, query, onAdd }: { view: SmartView | null; query: string; onAdd: () => void }) { const m = messages[useUiStore((store) => store.locale)]; const text = query ? m.noSearch : view === 'today' ? m.nothingToday : view === 'no-date' ? m.everyHasDate : view === 'completed' ? m.noCompleted : m.noTasks; return <div className="empty-state"><CheckCircle2 /><strong>{text}</strong>{!query && view !== 'completed' && <button onClick={onAdd}>{m.addATask}</button>}</div> }
 function Modal({ title, onClose, children, className = '' }: { title: string; onClose: () => void; children: React.ReactNode; className?: string }) { const m = messages[useUiStore((store) => store.locale)]; return <div className="modal-layer" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}><section className={`modal ${className}`} role="dialog" aria-modal="true" aria-label={title}><header><h2>{title}</h2><button onClick={onClose} aria-label={m.close}><X /></button></header>{children}</section></div> }
 function CommandPalette({ onClose, onNavigate, onCreate, onRefresh, onSettings, onTheme, onExport, onImport, onShortcuts }: { onClose: () => void; onNavigate: (view: SmartView) => void; onCreate: () => void; onRefresh: () => void; onSettings: () => void; onTheme: () => void; onExport: () => void; onImport: () => void; onShortcuts: () => void }) { const m = messages[useUiStore((store) => store.locale)]; const [filter, setFilter] = useState(''); const commands = [{ label: m.goToday, icon: Sparkles, run: () => onNavigate('today') }, { label: m.goUpcoming, icon: CalendarDays, run: () => onNavigate('upcoming') }, { label: m.createTask, icon: Plus, run: onCreate }, { label: m.refreshTasks, icon: RefreshCw, run: onRefresh }, { label: m.toggleTheme, icon: Moon, run: onTheme }, { label: m.exportTasks, icon: Download, run: onExport }, { label: m.importTasks, icon: Upload, run: onImport }, { label: m.openSettings, icon: Settings, run: onSettings }, { label: m.keyboardShortcuts, icon: Keyboard, run: onShortcuts }].filter((item) => item.label.toLowerCase().includes(filter.toLowerCase())); return <Modal title={m.commandMenu} onClose={onClose} className="command-modal"><div className="global-search"><Search /><input autoFocus value={filter} onChange={(event) => setFilter(event.target.value)} placeholder={m.commandPlaceholder} /></div><div className="command-list">{commands.map(({ label, icon: Icon, run }) => <button key={label} onClick={() => { run(); if (![m.toggleTheme, m.exportTasks].includes(label)) onClose() }}><Icon /><span>{label}</span><ChevronRight /></button>)}</div></Modal> }
-function SettingsPanel({ sessionLabel, theme, density, horizon, locale, onTheme, onDensity, onHorizon, onLocale, onRefresh, onExport, onImport, onClear, onDisconnect, onClose }: { sessionLabel: string; theme: string; density: string; horizon: number; locale: AppLocale; onTheme: (theme: 'system' | 'light' | 'dark') => void; onDensity: (density: 'comfortable' | 'compact') => void; onHorizon: (horizon: 7 | 14 | 30) => void; onLocale: (locale: AppLocale) => void; onRefresh: () => void; onExport: () => void; onImport: () => void; onClear: () => void; onDisconnect: () => void; onClose: () => void }) { const m = messages[locale]; return <Modal title={m.settings} onClose={onClose} className="settings-modal"><div className="settings-content"><section><h3>{m.appearance}</h3><label>{m.language}<select value={locale} onChange={(event) => onLocale(event.target.value as AppLocale)}><option value="en">{m.english}</option><option value="hu">{m.hungarian}</option></select></label><label>{m.theme}<select aria-label={m.theme} value={theme} onChange={(event) => onTheme(event.target.value as 'system' | 'light' | 'dark')}><option value="system">{m.system}</option><option value="light">{m.light}</option><option value="dark">{m.dark}</option></select></label><label>{m.density}<select value={density} onChange={(event) => onDensity(event.target.value as 'comfortable' | 'compact')}><option value="comfortable">{m.comfortable}</option><option value="compact">{m.compact}</option></select></label></section><section><h3>{m.behavior}</h3><label>{m.upcomingHorizon}<select value={horizon} onChange={(event) => onHorizon(Number(event.target.value) as 7 | 14 | 30)}><option value="7">7 {m.days}</option><option value="14">14 {m.days}</option><option value="30">30 {m.days}</option></select></label></section><section><h3>{m.data}</h3><p className="session-status"><strong>{m.sessionStatus}</strong><span>{sessionLabel}</span></p><button onClick={onRefresh}><RefreshCw /> {m.refreshNow}</button><button onClick={onExport}><Download /> {m.exportTasks}</button><button onClick={onImport}><Upload /> {m.importTasks}</button><button onClick={onClear}><Trash2 /> {m.clearCache}</button>{!mockMode && <button className="danger-text" onClick={onDisconnect}><CloudOff /> {m.disconnect}</button>}</section><section><h3>{m.about}</h3><p>TaskStride 1.0.0 · MIT License</p><p>{m.privacy}</p></section></div></Modal> }
+function SettingsPanel({ sessionLabel, theme, density, horizon, locale, onTheme, onDensity, onHorizon, onLocale, onRefresh, onExport, onImport, onClear, onDisconnect, onClose }: { sessionLabel: string; theme: string; density: string; horizon: number; locale: AppLocale; onTheme: (theme: 'system' | 'light' | 'dark') => void; onDensity: (density: 'comfortable' | 'compact') => void; onHorizon: (horizon: 7 | 14 | 30) => void; onLocale: (locale: AppLocale) => void; onRefresh: () => void; onExport: () => void; onImport: () => void; onClear: () => void; onDisconnect: () => void; onClose: () => void }) { const m = messages[locale]; return <Modal title={m.settings} onClose={onClose} className="settings-modal"><div className="settings-content"><section><h3>{m.appearance}</h3><label>{m.language}<select value={locale} onChange={(event) => onLocale(event.target.value as AppLocale)}><option value="en">{m.english}</option><option value="hu">{m.hungarian}</option></select></label><label>{m.theme}<select aria-label={m.theme} value={theme} onChange={(event) => onTheme(event.target.value as 'system' | 'light' | 'dark')}><option value="system">{m.system}</option><option value="light">{m.light}</option><option value="dark">{m.dark}</option></select></label><label>{m.density}<select value={density} onChange={(event) => onDensity(event.target.value as 'comfortable' | 'compact')}><option value="comfortable">{m.comfortable}</option><option value="compact">{m.compact}</option></select></label></section><section><h3>{m.behavior}</h3><label>{m.upcomingHorizon}<select value={horizon} onChange={(event) => onHorizon(Number(event.target.value) as 7 | 14 | 30)}><option value="7">7 {m.days}</option><option value="14">14 {m.days}</option><option value="30">30 {m.days}</option></select></label></section><section><h3>{m.data}</h3><p className="session-status"><strong>{m.sessionStatus}</strong><span>{sessionLabel}</span></p><button onClick={onRefresh}><RefreshCw /> {m.refreshNow}</button><button onClick={onExport}><Download /> {m.exportTasks}</button><button onClick={onImport}><Upload /> {m.importTasks}</button><button onClick={onClear}><Trash2 /> {m.clearCache}</button>{!mockMode && <button className="danger-text" onClick={onDisconnect}><CloudOff /> {m.disconnect}</button>}</section><section><h3>{m.about}</h3><p>TaskStride {__APP_VERSION__}{__APP_COMMIT__ && ` (${__APP_COMMIT__})`} · MIT License</p><p>{m.privacy}</p></section></div></Modal> }
 function Shortcuts({ onClose }: { onClose: () => void }) { const m = messages[useUiStore((store) => store.locale)]; const rows = [['N / Q', m.newTask], ['⌘ / Ctrl + K', m.commandMenu], ['/', m.search], ['Space', m.toggleSelected], ['Enter', m.openSelected], ['Esc', m.closePanel], ['?', m.keyboardShortcuts]]; return <Modal title={m.keyboardShortcuts} onClose={onClose}><div className="shortcut-list">{rows.map(([keys, label]) => <div key={keys}><kbd>{keys}</kbd><span>{label}</span></div>)}</div></Modal> }

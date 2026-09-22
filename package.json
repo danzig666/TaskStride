@@ -1,7 +1,7 @@
 {
   "name": "taskstride",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "A responsive, installable Google Tasks frontend with manual ordering and English/Hungarian UI.",
   "repository": {
     "type": "git",

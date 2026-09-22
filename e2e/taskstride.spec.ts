@@ -138,3 +138,57 @@ test('completes and edits a subtask from its parent', async ({ page }) => {
   await title.press('Enter')
   await expect(page.getByRole('textbox', { name: 'Edit subtask: Collect launch blockers' })).toHaveValue('Collect launch blockers')
 })
+
+// Every layer that covers the list must close on Back rather than leave the app.
+const phoneLayers: Array<[string, (page: import('@playwright/test').Page) => Promise<import('@playwright/test').Locator>]> = [
+  ['settings', async (page) => { await page.getByRole('button', { name: 'Open navigation' }).click(); await page.getByRole('button', { name: 'Settings' }).click(); return page.getByRole('dialog', { name: 'Settings' }) }],
+  ['search', async (page) => { await page.getByRole('navigation', { name: 'Mobile navigation' }).getByRole('button', { name: 'Search' }).click(); return page.getByRole('dialog', { name: 'Search tasks' }) }],
+  ['navigation menu', async (page) => { await page.getByRole('button', { name: 'Open navigation' }).click(); return page.locator('.sidebar-open') }],
+  ['command menu', async (page) => { await page.keyboard.press('Control+k'); return page.getByRole('dialog', { name: 'Command menu' }) }],
+  ['task composer', async (page) => { await page.getByRole('button', { name: 'Show the task composer' }).click(); return page.getByRole('textbox', { name: 'Add a task' }) }],
+  ['task details', async (page) => { await page.getByRole('region', { name: 'Tasks' }).getByText('Review Q4 product brief').click(); return page.getByRole('textbox', { name: 'Task details' }) }],
+]
+for (const [name, open] of phoneLayers) {
+  test(`Back closes the ${name} on a phone instead of leaving the app`, async ({ page }) => {
+    await page.setViewportSize({ width: 390, height: 844 })
+    await page.goto('data:text/html,<title>previous site</title>')
+    await page.goto('/')
+    await expect(page.getByText('Review Q4 product brief').first()).toBeVisible()
+    const layer = await open(page)
+    await expect(layer).toBeVisible()
+
+    await page.goBack()
+
+    await expect(layer).toBeHidden()
+    expect(page.url()).toContain('127.0.0.1:4173')
+    // With everything closed, Back leaves as usual.
+    await page.goBack()
+    await expect(page).toHaveTitle('previous site')
+  })
+}
+
+test('Back closes stacked layers one at a time', async ({ page }) => {
+  // A tablet shows the details as a side sheet, so search can open on top of it.
+  await page.setViewportSize({ width: 1000, height: 800 })
+  await page.goto('/')
+  await page.getByRole('region', { name: 'Tasks' }).getByText('Review Q4 product brief').click()
+  await expect(page.getByRole('textbox', { name: 'Task details' })).toBeVisible()
+  await page.keyboard.press('/')
+  await expect(page.getByRole('dialog', { name: 'Search tasks' })).toBeVisible()
+
+  await page.goBack()
+  await expect(page.getByRole('dialog', { name: 'Search tasks' })).toBeHidden()
+  await expect(page.getByRole('textbox', { name: 'Task details' })).toBeVisible()
+
+  await page.goBack()
+  await expect(page.getByRole('textbox', { name: 'Task details' })).toBeHidden()
+  expect(page.url()).toContain('127.0.0.1:4173')
+})
+
+test('phones search from the bars instead of a filter row', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/')
+  await expect(page.getByText('Review Q4 product brief').first()).toBeVisible()
+  await expect(page.getByRole('textbox', { name: 'Filter tasks…' })).toBeHidden()
+  await expect(page.getByRole('button', { name: 'Search' }).first()).toBeVisible()
+})
